@@ -55,7 +55,6 @@ class GbbApp(App):
 
     BINDINGS = [
         Binding("q", "quit_app", "Quit"),
-        Binding("enter", "select_branch", "Select", priority=True),
         Binding("down", "cursor_down", "Down", show=False, priority=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
@@ -90,9 +89,6 @@ class GbbApp(App):
     def __init__(self, repo_data: list[tuple[str, Path, list[BranchInfo]]]):
         super().__init__()
         self.repo_data = repo_data
-        self.selected_path: str | None = None
-        self.selected_branch: str | None = None
-        self.selected_has_worktree: bool = False
         self.filtering: bool = False
         self._repo_colors: dict[str, str] = {}
         for i, (name, _, _) in enumerate(repo_data):
@@ -166,29 +162,25 @@ class GbbApp(App):
         else:
             self.exit()
 
-    def action_select_branch(self) -> None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return
-
-        key = str(table.ordered_rows[table.cursor_row].key)
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        key = str(event.row_key.value)
         # key format: "{repo_name}:{branch_name}:{wt_path}"
         parts = key.split(":", 2)
         repo_name = parts[0] if len(parts) > 0 else ""
         branch_name = parts[1] if len(parts) > 1 else ""
         wt_path = parts[2] if len(parts) > 2 else ""
 
-        self.selected_branch = branch_name
-        self.selected_has_worktree = bool(wt_path)
+        has_worktree = bool(wt_path)
         if wt_path:
-            self.selected_path = wt_path
+            path = wt_path
         else:
+            path = ""
             for name, repo_path, _ in self.repo_data:
                 if name == repo_name:
-                    self.selected_path = str(repo_path)
+                    path = str(repo_path)
                     break
 
-        self.exit()
+        self.exit((path, branch_name, has_worktree))
 
     def action_cursor_down(self) -> None:
         table = self.query_one(DataTable)
