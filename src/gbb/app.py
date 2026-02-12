@@ -212,12 +212,34 @@ class GbbApp(App):
 
     def action_cursor_down(self) -> None:
         table = self._focused_table()
-        if table:
+        if not table:
+            return
+        if table.cursor_row >= table.row_count - 1:
+            tables = self._visible_tables()
+            try:
+                idx = tables.index(table)
+            except ValueError:
+                return
+            next_table = tables[(idx + 1) % len(tables)]
+            next_table.focus()
+            next_table.move_cursor(row=0)
+        else:
             table.action_cursor_down()
 
     def action_cursor_up(self) -> None:
         table = self._focused_table()
-        if table:
+        if not table:
+            return
+        if table.cursor_row <= 0:
+            tables = self._visible_tables()
+            try:
+                idx = tables.index(table)
+            except ValueError:
+                return
+            prev_table = tables[(idx - 1) % len(tables)]
+            prev_table.focus()
+            prev_table.move_cursor(row=prev_table.row_count - 1)
+        else:
             table.action_cursor_up()
 
     def action_prev_table(self) -> None:
