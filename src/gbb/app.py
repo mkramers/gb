@@ -60,7 +60,7 @@ class GbbApp(App):
     }
     """
 
-    def __init__(self, repo_data: list[tuple[str, list[BranchInfo]]]):
+    def __init__(self, repo_data: list[tuple[str, "Path", list[BranchInfo]]]):
         super().__init__()
         self.repo_data = repo_data
         self.selected_path: str | None = None
@@ -79,10 +79,10 @@ class GbbApp(App):
         )
 
         row_index = 0
-        for repo_name, branches in self.repo_data:
+        for repo_name, repo_path, branches in self.repo_data:
             table.add_row(
                 f"── {repo_name} ──", "", "", "", "", "", "",
-                key=f"group:{repo_name}",
+                key=f"group:{repo_path}",
             )
             self.group_rows.append(row_index)
             row_index += 1
@@ -134,10 +134,10 @@ class GbbApp(App):
         if wt_path:
             self.selected_path = wt_path
         else:
-            for repo_name, branches in self.repo_data:
+            for _, repo_path, branches in self.repo_data:
                 for b in branches:
                     if b.name == branch_name:
-                        self.selected_path = str(b.worktree.path) if b.worktree else None
+                        self.selected_path = str(repo_path)
                         break
 
         self.exit()

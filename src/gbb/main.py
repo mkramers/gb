@@ -10,7 +10,7 @@ def main():
     config = load_config()
     cwd = Path.cwd()
 
-    repo_data: list[tuple[str, list[BranchInfo]]] = []
+    repo_data: list[tuple[str, Path, list[BranchInfo]]] = []
     for repo_path in config.repos:
         if not repo_path.exists():
             print(f"Skipping missing repo: {repo_path}", file=sys.stderr)
@@ -18,7 +18,7 @@ def main():
 
         branches = discover_repo(repo_path, config.recent_days, cwd)
         if branches:
-            repo_data.append((repo_path.name, branches))
+            repo_data.append((repo_path.name, repo_path, branches))
 
     if not repo_data:
         print("No repos with branches found.", file=sys.stderr)
