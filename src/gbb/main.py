@@ -1,5 +1,6 @@
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from gbb.app import GbbApp
@@ -13,15 +14,20 @@ def main():
     config = load_config()
     cwd = Path.cwd()
 
-    repo_data: list[tuple[str, Path, list[BranchInfo]]] = []
-    for repo_path in config.repos:
-        if not repo_path.exists():
-            print(f"Skipping missing repo: {repo_path}", file=sys.stderr)
-            continue
+    valid_repos = [p for p in config.repos if p.exists()]
+    for p in config.repos:
+        if not p.exists():
+            print(f"Skipping missing repo: {p}", file=sys.stderr)
 
-        branches = discover_repo(repo_path, config.recent_days, cwd)
-        if branches:
-            repo_data.append((repo_path.name, repo_path, branches))
+    with ThreadPoolExecutor() as pool:
+        results = pool.map(
+            lambda rp: (rp.name, rp, discover_repo(rp, config.recent_days, cwd)),
+            valid_repos,
+        )
+
+    repo_data: list[tuple[str, Path, list[BranchInfo]]] = [
+        (name, path, branches) for name, path, branches in results if branches
+    ]
 
     if not repo_data:
         print("No repos with branches found.", file=sys.stderr)
