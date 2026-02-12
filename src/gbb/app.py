@@ -109,16 +109,16 @@ class GbbApp(App):
         yield Input(placeholder="/filter branches...", id="filter-bar")
 
     def on_mount(self) -> None:
-        self._populate(self._all_rows)
         table = self.query_one(DataTable)
+        table.add_columns(
+            "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit"
+        )
+        self._populate(self._all_rows)
         table.focus()
 
     def _populate(self, rows: list[tuple[str, Path, BranchInfo]]) -> None:
         table = self.query_one(DataTable)
-        table.clear(columns=True)
-        table.add_columns(
-            "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit"
-        )
+        table.clear()
         self._group_indices = []
         last_repo = None
 
