@@ -4,7 +4,7 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import DataTable, Header, Input
+from textual.widgets import DataTable, Footer, Header, Input
 
 from gbb.git import BranchInfo
 
@@ -54,15 +54,16 @@ class GbbApp(App):
     TITLE = "gbb"
 
     BINDINGS = [
-        Binding("q", "quit_app", "Quit"),
+        Binding("q", "quit_app", "Quit", show=True),
         Binding("down", "cursor_down", "Down", show=False, priority=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("alt+up", "prev_group", "Prev repo", show=False),
         Binding("alt+down", "next_group", "Next repo", show=False),
-        Binding("slash", "start_filter", "Filter", show=False),
-        Binding("escape", "cancel", "Cancel"),
+        Binding("slash", "start_filter", "Filter", show=True),
+        Binding("a", "toggle_scope", "All repos", show=True),
+        Binding("escape", "cancel", "Cancel", show=True),
     ]
 
     CSS = """
@@ -86,9 +87,15 @@ class GbbApp(App):
     }
     """
 
-    def __init__(self, repo_data: list[tuple[str, Path, list[BranchInfo]]]):
+    def __init__(
+        self,
+        repo_data: list[tuple[str, Path, list[BranchInfo]]],
+        current_repo: str | None = None,
+    ):
         super().__init__()
         self.repo_data = repo_data
+        self._current_repo = current_repo
+        self._show_all = current_repo is None
         self.filtering: bool = False
         self._repo_colors: dict[str, str] = {}
         for i, (name, _, _) in enumerate(repo_data):
@@ -103,13 +110,20 @@ class GbbApp(App):
         yield Header()
         yield DataTable(cursor_type="row")
         yield Input(placeholder="/filter branches...", id="filter-bar")
+        yield Footer()
+
+    def _scoped_rows(self) -> list[tuple[str, Path, BranchInfo]]:
+        if not self._show_all and self._current_repo:
+            return [r for r in self._all_rows if r[0] == self._current_repo]
+        return self._all_rows
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns(
             "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit"
         )
-        self._populate(self._all_rows)
+        self._populate(self._scoped_rows())
+        self._update_scope_label()
         table.focus()
 
     def _populate(self, rows: list[tuple[str, Path, BranchInfo]]) -> None:
@@ -153,6 +167,24 @@ class GbbApp(App):
                 b.commit,
                 key=f"{repo_name}:{b.name}:{wt_path}",
             )
+
+    def _update_scope_label(self) -> None:
+        label = "This repo" if self._show_all else "All repos"
+        self._bindings.key_to_bindings["a"] = [
+            Binding("a", "toggle_scope", label, show=True)
+        ]
+        self.refresh_bindings()
+
+    def action_toggle_scope(self) -> None:
+        if self._current_repo is None:
+            return
+        self._show_all = not self._show_all
+        self._update_scope_label()
+        if self.filtering:
+            query = self.query_one("#filter-bar", Input).value
+            self._apply_filter(query)
+        else:
+            self._populate(self._scoped_rows())
 
     def action_quit_app(self) -> None:
         self.exit()
@@ -235,7 +267,7 @@ class GbbApp(App):
         filter_bar = self.query_one("#filter-bar", Input)
         filter_bar.remove_class("visible")
         filter_bar.value = ""
-        self._populate(self._all_rows)
+        self._populate(self._scoped_rows())
         table = self.query_one(DataTable)
         table.focus()
 
@@ -252,12 +284,13 @@ class GbbApp(App):
             table.focus()
 
     def _apply_filter(self, query: str) -> None:
+        rows = self._scoped_rows()
         query = query.lower()
         if query:
             filtered = [
-                row for row in self._all_rows
+                row for row in rows
                 if query in row[2].name.lower() or query in row[0].lower()
             ]
         else:
-            filtered = self._all_rows
+            filtered = rows
         self._populate(filtered)

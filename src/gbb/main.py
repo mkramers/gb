@@ -27,9 +27,18 @@ def main():
         print("No repos with branches found.", file=sys.stderr)
         sys.exit(1)
 
+    current_repo_name: str | None = None
+    for name, repo_path, _ in repo_data:
+        try:
+            cwd.relative_to(repo_path)
+            current_repo_name = name
+            break
+        except ValueError:
+            continue
+
     RESULT_FILE.unlink(missing_ok=True)
 
-    app = GbbApp(repo_data)
+    app = GbbApp(repo_data, current_repo=current_repo_name)
     result = app.run()
 
     if result:
