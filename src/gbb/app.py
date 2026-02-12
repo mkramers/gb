@@ -124,7 +124,8 @@ class GbbApp(App):
                 last_repo = repo_name
 
             color = self._repo_colors[repo_name]
-            repo_cell = Text(repo_name, style=f"bold {color}")
+            tree = "🌲 " if b.worktree else "   "
+            repo_cell = Text(f"{tree}{repo_name}", style=f"bold {color}")
 
             if b.is_current:
                 prefix = "@ "
