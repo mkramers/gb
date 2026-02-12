@@ -111,7 +111,7 @@ class GbbApp(App):
                     path,
                     b.commit,
                     format_age(b.timestamp),
-                    key=f"branch:{b.name}:{wt_path}",
+                    key=f"branch:{repo_name}:{b.name}:{wt_path}",
                 )
                 row_index += 1
 
@@ -125,20 +125,21 @@ class GbbApp(App):
         if key.startswith("group:"):
             return
 
-        parts = key.split(":", 2)
-        branch_name = parts[1] if len(parts) > 1 else ""
-        wt_path = parts[2] if len(parts) > 2 else ""
+        # key format: "branch:{repo_name}:{branch_name}:{wt_path}"
+        parts = key.split(":", 3)
+        repo_name = parts[1] if len(parts) > 1 else ""
+        branch_name = parts[2] if len(parts) > 2 else ""
+        wt_path = parts[3] if len(parts) > 3 else ""
 
         self.selected_branch = branch_name
         self.selected_has_worktree = bool(wt_path)
         if wt_path:
             self.selected_path = wt_path
         else:
-            for _, repo_path, branches in self.repo_data:
-                for b in branches:
-                    if b.name == branch_name:
-                        self.selected_path = str(repo_path)
-                        break
+            for name, repo_path, _ in self.repo_data:
+                if name == repo_name:
+                    self.selected_path = str(repo_path)
+                    break
 
         self.exit()
 
