@@ -55,7 +55,7 @@ class GbbApp(App):
 
     BINDINGS = [
         Binding("q", "quit_app", "Quit"),
-        Binding("enter", "select_branch", "Select"),
+        Binding("enter", "select_branch", "Select", priority=True),
         Binding("down", "cursor_down", "Down", show=False, priority=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
