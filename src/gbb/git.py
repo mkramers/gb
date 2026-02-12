@@ -1,3 +1,5 @@
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,3 +45,101 @@ def parse_worktrees(output: str) -> dict[str, Worktree]:
         current[key] = value
 
     return worktrees
+
+
+def parse_branches(output: str) -> dict[str, BranchInfo]:
+    branches = {}
+    for line in output.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            name, commit, timestamp = parts[0], parts[1], int(parts[2])
+            branches[name] = BranchInfo(
+                name=name, commit=commit, timestamp=timestamp
+            )
+    return branches
+
+
+def run_git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True
+    )
+    return result.stdout
+
+
+def detect_main_branch(repo: Path) -> str | None:
+    for name in ("main", "master"):
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", f"refs/heads/{name}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return name
+    return None
+
+
+def is_dirty(path: Path) -> bool:
+    output = run_git(path, "status", "--porcelain")
+    return bool(output.strip())
+
+
+def ahead_behind(repo: Path, branch: str, upstream: str) -> tuple[int, int]:
+    output = run_git(
+        repo, "rev-list", "--left-right", "--count", f"{branch}...{upstream}"
+    )
+    parts = output.strip().split()
+    if len(parts) == 2:
+        return int(parts[0]), int(parts[1])
+    return 0, 0
+
+
+def discover_repo(
+    repo: Path, recent_days: int, cwd: Path
+) -> list[BranchInfo]:
+    wt_output = run_git(repo, "worktree", "list", "--porcelain")
+    worktrees = parse_worktrees(wt_output)
+
+    ref_output = run_git(
+        repo,
+        "for-each-ref",
+        "refs/heads/",
+        "--format=%(refname:short) %(objectname:short) %(committerdate:unix)",
+    )
+    branches = parse_branches(ref_output)
+
+    main_branch = detect_main_branch(repo)
+    cutoff = time.time() - (recent_days * 86400)
+
+    result = []
+    for name, info in branches.items():
+        if name in worktrees:
+            wt = worktrees[name]
+            info.worktree = wt
+            info.commit = wt.head
+            info.is_current = cwd == wt.path or str(cwd).startswith(
+                str(wt.path) + "/"
+            )
+            info.dirty = is_dirty(wt.path)
+        elif info.timestamp < cutoff:
+            continue
+
+        if main_branch and name != main_branch:
+            info.ahead_main, info.behind_main = ahead_behind(
+                repo, name, main_branch
+            )
+
+        if info.worktree:
+            upstream = run_git(
+                repo,
+                "for-each-ref",
+                "--format=%(upstream:short)",
+                f"refs/heads/{name}",
+            ).strip()
+            if upstream:
+                info.ahead_upstream, info.behind_upstream = ahead_behind(
+                    repo, name, upstream
+                )
+
+        result.append(info)
+
+    return result

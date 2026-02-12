@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from gbb.git import parse_worktrees, Worktree
+from gbb.git import parse_branches, parse_worktrees
 
 
 WORKTREE_OUTPUT = """\
@@ -27,3 +27,18 @@ def test_parse_worktrees_bare():
     output = "worktree /Users/mk/projects/app\nHEAD abc1234\nbranch (detached)\n\n"
     result = parse_worktrees(output)
     assert len(result) == 0
+
+
+FOR_EACH_REF_OUTPUT = """\
+main abc1234 1707000000
+feature-x def5678 1707100000
+old-branch 999aaaa 1600000000
+"""
+
+
+def test_parse_branches():
+    result = parse_branches(FOR_EACH_REF_OUTPUT)
+    assert len(result) == 3
+    assert result["main"].commit == "abc1234"
+    assert result["main"].name == "main"
+    assert result["feature-x"].timestamp == 1707100000
