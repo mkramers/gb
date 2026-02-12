@@ -117,7 +117,7 @@ class GbbApp(App):
         table = self.query_one(DataTable)
         table.clear(columns=True)
         table.add_columns(
-            "Repo", "Branch", "Status", "HEAD±", "main±", "Path", "Commit", "Age"
+            "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit"
         )
         self._group_indices = []
         last_repo = None
@@ -148,12 +148,12 @@ class GbbApp(App):
             table.add_row(
                 repo_cell,
                 f"{prefix}{b.name}",
+                Text(format_age(b.timestamp), style="dim"),
                 status,
                 format_ahead_behind(b.ahead_upstream, b.behind_upstream),
                 format_ahead_behind(b.ahead_main, b.behind_main),
                 path,
                 b.commit,
-                format_age(b.timestamp),
                 key=f"{repo_name}:{b.name}:{wt_path}",
             )
 
