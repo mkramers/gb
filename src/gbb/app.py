@@ -263,7 +263,7 @@ class GbbApp(App):
         if query:
             filtered = [
                 row for row in self._all_rows
-                if query in row[2].name.lower()
+                if query in row[2].name.lower() or query in row[0].lower()
             ]
         else:
             filtered = self._all_rows
