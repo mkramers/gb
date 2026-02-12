@@ -31,15 +31,15 @@ def format_age(timestamp: int) -> str:
     return f"{delta // 604800}w"
 
 
-def format_ahead_behind(ahead: int, behind: int) -> str:
+def format_ahead_behind(ahead: int, behind: int) -> Text:
     if not ahead and not behind:
-        return ""
-    parts = []
+        return Text("")
+    result = Text()
     if ahead:
-        parts.append(f"+{ahead}")
+        result.append(f"+{ahead}", style="#50fa7b")
     if behind:
-        parts.append(f"-{behind}")
-    return "".join(parts)
+        result.append(f"-{behind}", style="#ff5555")
+    return result
 
 
 def shorten_path(path: Path) -> str:
@@ -138,9 +138,9 @@ class GbbApp(App):
                 prefix = "  "
 
             if b.worktree:
-                status = "*" if b.dirty else " "
+                status = Text("*", style="#ffb86c") if b.dirty else Text(" ")
             else:
-                status = "—"
+                status = Text("—", style="dim")
 
             path = shorten_path(b.worktree.path) if b.worktree else ""
             wt_path = str(b.worktree.path) if b.worktree else ""

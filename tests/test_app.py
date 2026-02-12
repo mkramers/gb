@@ -5,10 +5,10 @@ from gbb.app import format_age, format_ahead_behind, shorten_path
 
 
 def test_format_ahead_behind():
-    assert format_ahead_behind(0, 0) == ""
-    assert format_ahead_behind(3, 0) == "+3"
-    assert format_ahead_behind(0, 2) == "-2"
-    assert format_ahead_behind(5, 1) == "+5-1"
+    assert str(format_ahead_behind(0, 0)) == ""
+    assert str(format_ahead_behind(3, 0)) == "+3"
+    assert str(format_ahead_behind(0, 2)) == "-2"
+    assert str(format_ahead_behind(5, 1)) == "+5-1"
 
 
 def test_format_age():

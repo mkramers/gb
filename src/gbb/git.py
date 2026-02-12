@@ -67,6 +67,11 @@ def run_git(repo: Path, *args: str) -> str:
 
 
 def detect_main_branch(repo: Path) -> str | None:
+    # Try the remote HEAD symref first (e.g. origin/HEAD -> origin/main)
+    ref = run_git(repo, "symbolic-ref", "refs/remotes/origin/HEAD").strip()
+    if ref:
+        return ref.removeprefix("refs/remotes/origin/")
+
     for name in ("main", "master"):
         result = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--verify", f"refs/heads/{name}"],
