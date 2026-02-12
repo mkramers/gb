@@ -3,11 +3,15 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from gbb.app import GbbApp
 from gbb.config import load_config
 from gbb.git import BranchInfo, discover_repo
 
 RESULT_FILE = Path(f"/tmp/gbb-{os.getuid()}-result")
+
+
+def _import_app():
+    from gbb.app import GbbApp
+    return GbbApp
 
 
 def main():
@@ -20,10 +24,13 @@ def main():
             print(f"Skipping missing repo: {p}", file=sys.stderr)
 
     with ThreadPoolExecutor() as pool:
-        results = pool.map(
+        app_future = pool.submit(_import_app)
+        results = list(pool.map(
             lambda rp: (rp.name, rp, discover_repo(rp, config.recent_days, cwd)),
             valid_repos,
-        )
+        ))
+
+    GbbApp = app_future.result()
 
     repo_data: list[tuple[str, Path, list[BranchInfo]]] = [
         (name, path, branches) for name, path, branches in results if branches
