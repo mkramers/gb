@@ -99,7 +99,9 @@ class GbbApp(App):
     BINDINGS = [
         Binding("q", "quit_app", "Quit"),
         Binding("enter", "select_branch", "Select"),
+        Binding("down", "cursor_down", "Down", show=False, priority=True),
         Binding("j", "cursor_down", "Down", show=False),
+        Binding("up", "cursor_up", "Up", show=False, priority=True),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("alt+up", "prev_table", "Prev repo", show=False),
         Binding("alt+down", "next_table", "Next repo", show=False),
