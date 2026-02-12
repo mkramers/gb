@@ -30,13 +30,14 @@ gbb
 | `j`/`k` | Navigate branches |
 | `Enter` | Select branch |
 | `/` | Filter branches |
+| `a` | Toggle between current repo and all repos |
 | `Alt+↑`/`Alt+↓` | Jump between repos |
 | `q`/`Esc` | Quit |
 
 Selecting a branch with a worktree writes its path to `/tmp/gbb-<uid>-result`. Use a shell wrapper to `cd` there automatically:
 
 ```sh
-function gb() { gbb && cd "$(cat /tmp/gbb-$(id -u)-result)" }
+function gbb() { command gbb && cd "$(cat /tmp/gbb-$(id -u)-result)" }
 ```
 
 ## License
