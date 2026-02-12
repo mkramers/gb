@@ -36,9 +36,9 @@ def format_ahead_behind(ahead: int, behind: int) -> Text:
         return Text("")
     result = Text()
     if ahead:
-        result.append(f"+{ahead}", style="#50fa7b")
+        result.append(f"↑{ahead}", style="#50fa7b")
     if behind:
-        result.append(f"-{behind}", style="#ff5555")
+        result.append(f"↓{behind}", style="#ff5555")
     return result
 
 
