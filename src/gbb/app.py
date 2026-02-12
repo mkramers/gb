@@ -84,7 +84,7 @@ class RepoSection(Vertical):
         self.branches = branches
 
     def compose(self) -> ComposeResult:
-        yield Label(f" {self.repo_name} ", classes="repo-header")
+        yield Label(f" ● {self.repo_name} ", classes="repo-header")
         table = DataTable(cursor_type="row", id=f"table-{self.repo_name}")
         yield table
 
@@ -120,21 +120,24 @@ class GbbApp(App):
     }
 
     .repo-header {
-        background: $primary-background;
-        color: $text;
+        background: $surface;
+        color: #50fa7b;
         text-style: bold;
         width: 100%;
         padding: 0 1;
+        border-bottom: solid #50fa7b 40%;
     }
 
     DataTable {
         height: auto;
-        max-height: 20;
+        max-height: 50vh;
+        overflow-y: auto;
     }
 
     #filter-bar {
         dock: bottom;
-        height: 1;
+        height: auto;
+        min-height: 1;
         display: none;
     }
 
