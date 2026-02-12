@@ -1,10 +1,13 @@
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from gbb.app import GbbApp
 from gbb.config import load_config
 from gbb.git import BranchInfo, discover_repo
+
+RESULT_FILE = Path(tempfile.gettempdir()) / f"gbb-{os.getuid()}-result"
 
 
 def main():
@@ -25,18 +28,16 @@ def main():
         print("No repos with branches found.", file=sys.stderr)
         sys.exit(1)
 
-    # Save original stdout fd before Textual takes over
-    stdout_fd = os.dup(1)
+    # Clear any previous result
+    RESULT_FILE.unlink(missing_ok=True)
 
     app = GbbApp(repo_data)
     app.run()
 
-    # Write to the original stdout fd directly
     if app.selected_path:
-        os.write(stdout_fd, f"{app.selected_path}\n".encode())
+        RESULT_FILE.write_text(app.selected_path)
         if not app.selected_has_worktree and app.selected_branch:
             print(
                 f"hint: git checkout {app.selected_branch}",
                 file=sys.stderr,
             )
-    os.close(stdout_fd)
