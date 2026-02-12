@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -24,13 +25,18 @@ def main():
         print("No repos with branches found.", file=sys.stderr)
         sys.exit(1)
 
+    # Save original stdout fd before Textual takes over
+    stdout_fd = os.dup(1)
+
     app = GbbApp(repo_data)
     app.run()
 
+    # Write to the original stdout fd directly
     if app.selected_path:
-        print(app.selected_path)
+        os.write(stdout_fd, f"{app.selected_path}\n".encode())
         if not app.selected_has_worktree and app.selected_branch:
             print(
                 f"hint: git checkout {app.selected_branch}",
                 file=sys.stderr,
             )
+    os.close(stdout_fd)
