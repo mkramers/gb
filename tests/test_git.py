@@ -42,3 +42,10 @@ def test_parse_branches():
     assert result["main"].commit == "abc1234"
     assert result["main"].name == "main"
     assert result["feature-x"].timestamp == 1707100000
+
+
+def test_parse_branches_has_deletable_fields():
+    result = parse_branches(FOR_EACH_REF_OUTPUT)
+    branch = result["main"]
+    assert branch.deletable is False
+    assert branch.delete_reason is None

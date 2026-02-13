@@ -23,6 +23,8 @@ class BranchInfo:
     behind_upstream: int = 0
     ahead_main: int = 0
     behind_main: int = 0
+    deletable: bool = False
+    delete_reason: str | None = None
 
 
 def parse_worktrees(output: str) -> dict[str, Worktree]:
