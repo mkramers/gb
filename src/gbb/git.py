@@ -112,6 +112,15 @@ def ahead_behind(repo: Path, branch: str, upstream: str) -> tuple[int, int]:
     return 0, 0
 
 
+def is_ancestor(repo: Path, branch: str, ancestor: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", branch, ancestor],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 def discover_repo(
     repo: Path, recent_days: int, cwd: Path
 ) -> list[BranchInfo]:
@@ -171,6 +180,9 @@ def discover_repo(
             if gone_branches.get(name):
                 info.deletable = True
                 info.delete_reason = "upstream gone"
+            elif main_branch and is_ancestor(repo, name, main_branch):
+                info.deletable = True
+                info.delete_reason = "merged"
 
         result.append(info)
 

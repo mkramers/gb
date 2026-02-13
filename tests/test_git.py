@@ -1,6 +1,7 @@
 from pathlib import Path
+from unittest.mock import patch
 
-from gbb.git import parse_branches, parse_tracking_status, parse_worktrees
+from gbb.git import is_ancestor, parse_branches, parse_tracking_status, parse_worktrees
 
 
 WORKTREE_OUTPUT = """\
@@ -65,3 +66,15 @@ def test_parse_tracking_status():
     assert result["stale"] is True
     assert result.get("main") is False or result.get("main") is None
     assert result.get("dev") is False or result.get("dev") is None
+
+
+def test_is_ancestor_true():
+    with patch("gbb.git.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        assert is_ancestor(Path("/repo"), "feature", "main") is True
+
+
+def test_is_ancestor_false():
+    with patch("gbb.git.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 1
+        assert is_ancestor(Path("/repo"), "feature", "main") is False
