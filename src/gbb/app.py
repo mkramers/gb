@@ -76,6 +76,7 @@ class GbbApp(App):
     CSS = """
     DataTable {
         height: 1fr;
+        scrollbar-size: 0 0;
     }
 
     DataTable > .datatable--header {
