@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from gbb.git import is_ancestor, parse_branches, parse_tracking_status, parse_worktrees
+from gbb.git import is_ancestor, is_squash_merged, parse_branches, parse_tracking_status, parse_worktrees
 
 
 WORKTREE_OUTPUT = """\
@@ -78,3 +78,31 @@ def test_is_ancestor_false():
     with patch("gbb.git.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 1
         assert is_ancestor(Path("/repo"), "feature", "main") is False
+
+
+CHERRY_ALL_MERGED = """\
+- abc1234 first commit
+- def5678 second commit
+"""
+
+CHERRY_NOT_MERGED = """\
++ abc1234 first commit
+- def5678 second commit
+"""
+
+CHERRY_EMPTY = ""
+
+
+def test_is_squash_merged_all_applied():
+    with patch("gbb.git.run_git", return_value=CHERRY_ALL_MERGED):
+        assert is_squash_merged(Path("/repo"), "feature", "main") is True
+
+
+def test_is_squash_merged_not_all_applied():
+    with patch("gbb.git.run_git", return_value=CHERRY_NOT_MERGED):
+        assert is_squash_merged(Path("/repo"), "feature", "main") is False
+
+
+def test_is_squash_merged_empty():
+    with patch("gbb.git.run_git", return_value=CHERRY_EMPTY):
+        assert is_squash_merged(Path("/repo"), "feature", "main") is False

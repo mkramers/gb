@@ -112,6 +112,13 @@ def ahead_behind(repo: Path, branch: str, upstream: str) -> tuple[int, int]:
     return 0, 0
 
 
+def is_squash_merged(repo: Path, branch: str, main: str) -> bool:
+    output = run_git(repo, "cherry", main, branch).strip()
+    if not output:
+        return False
+    return all(line.startswith("-") for line in output.splitlines())
+
+
 def is_ancestor(repo: Path, branch: str, ancestor: str) -> bool:
     result = subprocess.run(
         ["git", "-C", str(repo), "merge-base", "--is-ancestor", branch, ancestor],
@@ -183,6 +190,9 @@ def discover_repo(
             elif main_branch and is_ancestor(repo, name, main_branch):
                 info.deletable = True
                 info.delete_reason = "merged"
+            elif main_branch and is_squash_merged(repo, name, main_branch):
+                info.deletable = True
+                info.delete_reason = "squash-merged"
 
         result.append(info)
 
