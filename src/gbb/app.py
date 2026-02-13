@@ -1,6 +1,5 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from pathlib import Path
 
 from rich.text import Text
@@ -135,9 +134,6 @@ class GbbApp(App):
         yield Static("", id="confirm-bar")
         yield Footer()
 
-    def _stamp_updated(self) -> None:
-        self.sub_title = f"updated {datetime.now().strftime('%H:%M:%S')}"
-
     def _rebuild_rows(self) -> None:
         self._all_rows = []
         self._repo_colors = {}
@@ -179,7 +175,7 @@ class GbbApp(App):
                 self.repo_data = [(current_repo_path.name, current_repo_path, branches)]
                 self._rebuild_rows()
             self._populate(self._scoped_rows())
-            self._stamp_updated()
+
             other_repos = [rp for rp in valid_repos if rp != current_repo_path]
             if other_repos:
                 self._loading_others = True
@@ -213,7 +209,6 @@ class GbbApp(App):
                 self.repo_data.append((name, path, branches))
         self._rebuild_rows()
         self._loading_others = False
-        self._stamp_updated()
         if self._show_all or self._current_repo is None:
             self._populate(self._scoped_rows())
 
@@ -260,7 +255,7 @@ class GbbApp(App):
             return
 
         if self._data_fingerprint(new_data) == self._data_fingerprint(self.repo_data):
-            self._stamp_updated()
+
             return
 
         table = self.query_one(DataTable)
@@ -279,8 +274,6 @@ class GbbApp(App):
                 if b.is_current:
                     self._current_repo = name
                     break
-
-        self._stamp_updated()
 
         if self.filtering:
             query = self.query_one("#filter-bar", Input).value
