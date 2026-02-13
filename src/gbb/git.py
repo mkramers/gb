@@ -61,6 +61,18 @@ def parse_branches(output: str) -> dict[str, BranchInfo]:
     return branches
 
 
+def parse_tracking_status(output: str) -> dict[str, bool]:
+    gone = {}
+    for line in output.strip().splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            name, track = parts
+            gone[name] = "[gone]" in track
+        elif len(parts) == 1:
+            gone[parts[0]] = False
+    return gone
+
+
 def run_git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True, text=True
@@ -114,6 +126,14 @@ def discover_repo(
     )
     branches = parse_branches(ref_output)
 
+    tracking_output = run_git(
+        repo,
+        "for-each-ref",
+        "refs/heads/",
+        "--format=%(refname:short) %(upstream:track)",
+    )
+    gone_branches = parse_tracking_status(tracking_output)
+
     main_branch = detect_main_branch(repo)
     cutoff = time.time() - (recent_days * 86400)
 
@@ -146,6 +166,11 @@ def discover_repo(
                 info.ahead_upstream, info.behind_upstream = ahead_behind(
                     repo, name, upstream
                 )
+
+        if name != main_branch and not info.is_current:
+            if gone_branches.get(name):
+                info.deletable = True
+                info.delete_reason = "upstream gone"
 
         result.append(info)
 

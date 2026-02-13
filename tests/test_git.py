@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from gbb.git import parse_branches, parse_worktrees
+from gbb.git import parse_branches, parse_tracking_status, parse_worktrees
 
 
 WORKTREE_OUTPUT = """\
@@ -49,3 +49,19 @@ def test_parse_branches_has_deletable_fields():
     branch = result["main"]
     assert branch.deletable is False
     assert branch.delete_reason is None
+
+
+TRACKING_OUTPUT = """\
+main
+feature-x [gone]
+dev [ahead 2]
+stale [gone]
+"""
+
+
+def test_parse_tracking_status():
+    result = parse_tracking_status(TRACKING_OUTPUT)
+    assert result["feature-x"] is True
+    assert result["stale"] is True
+    assert result.get("main") is False or result.get("main") is None
+    assert result.get("dev") is False or result.get("dev") is None
