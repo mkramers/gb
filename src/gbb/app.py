@@ -120,7 +120,8 @@ class GbbApp(App):
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns(
-            "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit"
+            "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit",
+            "Cleanup",
         )
         self._populate(self._scoped_rows())
         self._update_scope_label()
@@ -139,7 +140,6 @@ class GbbApp(App):
 
             color = self._repo_colors[repo_name]
             tree = "⎇ " if b.worktree else "  "
-            repo_cell = Text(f"{tree}{repo_name}", style=f"bold {color}")
 
             if b.is_current:
                 prefix = "@ "
@@ -153,18 +153,40 @@ class GbbApp(App):
             else:
                 status = Text("—", style="dim")
 
-            path = shorten_path(b.worktree.path) if b.worktree else ""
+            path_str = shorten_path(b.worktree.path) if b.worktree else ""
             wt_path = str(b.worktree.path) if b.worktree else ""
+
+            if b.deletable:
+                repo_cell = Text(f"{tree}{repo_name}", style=f"dim {color}")
+                branch_cell = Text(f"{prefix}{b.name}", style="dim")
+                age_cell = Text(format_age(b.timestamp), style="dim")
+                status_cell = Text(status.plain, style="dim")
+                head_cell = Text(format_ahead_behind(b.ahead_upstream, b.behind_upstream).plain, style="dim")
+                main_cell = Text(format_ahead_behind(b.ahead_main, b.behind_main).plain, style="dim")
+                path_cell = Text(path_str, style="dim")
+                commit_cell = Text(b.commit, style="dim")
+                cleanup_cell = Text(b.delete_reason or "", style="dim")
+            else:
+                repo_cell = Text(f"{tree}{repo_name}", style=f"bold {color}")
+                branch_cell = f"{prefix}{b.name}"
+                age_cell = Text(format_age(b.timestamp), style="dim")
+                status_cell = status
+                head_cell = format_ahead_behind(b.ahead_upstream, b.behind_upstream)
+                main_cell = format_ahead_behind(b.ahead_main, b.behind_main)
+                path_cell = path_str
+                commit_cell = b.commit
+                cleanup_cell = Text("")
 
             table.add_row(
                 repo_cell,
-                f"{prefix}{b.name}",
-                Text(format_age(b.timestamp), style="dim"),
-                status,
-                format_ahead_behind(b.ahead_upstream, b.behind_upstream),
-                format_ahead_behind(b.ahead_main, b.behind_main),
-                path,
-                b.commit,
+                branch_cell,
+                age_cell,
+                status_cell,
+                head_cell,
+                main_cell,
+                path_cell,
+                commit_cell,
+                cleanup_cell,
                 key=f"{repo_name}:{b.name}:{wt_path}",
             )
 
