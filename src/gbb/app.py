@@ -260,6 +260,7 @@ class GbbApp(App):
             return
 
         if self._data_fingerprint(new_data) == self._data_fingerprint(self.repo_data):
+            self._stamp_updated()
             return
 
         table = self.query_one(DataTable)
