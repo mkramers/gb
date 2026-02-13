@@ -59,7 +59,7 @@ class GbbApp(App):
     TITLE = "gbb"
 
     BINDINGS = [
-        Binding("q", "quit_app", "Quit", show=True),
+        Binding("q", "quit_app", "Close", show=True, key_display="q/esc"),
         Binding("down", "cursor_down", "Down", show=False, priority=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
@@ -68,7 +68,7 @@ class GbbApp(App):
         Binding("alt+down", "next_group", "Next repo", show=False),
         Binding("slash", "start_filter", "Filter", show=True),
         Binding("a", "toggle_scope", "All repos", show=True),
-        Binding("escape", "cancel", "Cancel", show=True),
+        Binding("escape", "cancel", "", show=False),
         Binding("d", "delete_branch", "Delete", show=True),
     ]
 
@@ -124,6 +124,7 @@ class GbbApp(App):
         self._current_repo: str | None = None
         self._show_all = show_all
         self._loading_others = False
+        self._footer_timer = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -183,6 +184,7 @@ class GbbApp(App):
 
         self._update_scope_label()
         self.set_interval(5, self._refresh_tick)
+        self._footer_timer = self.set_timer(3, self._hide_footer)
         table.focus()
 
     @work(thread=True, exclusive=True, group="discovery")
@@ -484,7 +486,19 @@ class GbbApp(App):
         else:
             self._populate(self._scoped_rows())
 
+    def _show_footer_briefly(self) -> None:
+        footer = self.query_one(Footer)
+        footer.display = True
+        if self._footer_timer is not None:
+            self._footer_timer.stop()
+        self._footer_timer = self.set_timer(3, self._hide_footer)
+
+    def _hide_footer(self) -> None:
+        self.query_one(Footer).display = False
+        self._footer_timer = None
+
     def on_key(self, event: events.Key) -> None:
+        self._show_footer_briefly()
         if self._pending_delete is not None:
             if event.key == "y":
                 repo_name, repo_path, branch = self._pending_delete
