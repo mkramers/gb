@@ -1,14 +1,17 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from rich.text import Text
-from textual import events
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, Input, Static
+from textual.worker import get_current_worker
 
 from gbb.cleanup import delete_branch, delete_worktree, has_non_ignored_files
-from gbb.git import BranchInfo, is_dirty
+from gbb.config import Config
+from gbb.git import BranchInfo, discover_repo, is_dirty
 
 REPO_COLORS = [
     "#50fa7b",
@@ -104,25 +107,23 @@ class GbbApp(App):
 
     def __init__(
         self,
-        repo_data: list[tuple[str, Path, list[BranchInfo]]],
-        current_repo: str | None = None,
-        worktree_ignore: list[str] | None = None,
+        config: Config,
+        cwd: Path,
+        show_all: bool = False,
     ):
         super().__init__()
-        self.repo_data = repo_data
-        self._current_repo = current_repo
-        self._worktree_ignore = worktree_ignore or []
+        self._config = config
+        self._cwd = cwd
+        self._force_show_all = show_all
         self._pending_delete: tuple[str, Path, BranchInfo] | None = None
-        self._show_all = current_repo is None
         self.filtering: bool = False
         self._repo_colors: dict[str, str] = {}
-        for i, (name, _, _) in enumerate(repo_data):
-            self._repo_colors[name] = REPO_COLORS[i % len(REPO_COLORS)]
         self._all_rows: list[tuple[str, Path, BranchInfo]] = []
-        for repo_name, repo_path, branches in repo_data:
-            for b in branches:
-                self._all_rows.append((repo_name, repo_path, b))
         self._group_indices: list[int] = []
+        self.repo_data: list[tuple[str, Path, list[BranchInfo]]] = []
+        self._current_repo: str | None = None
+        self._show_all = show_all
+        self._loading_others = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -130,6 +131,14 @@ class GbbApp(App):
         yield Input(placeholder="/filter branches...", id="filter-bar")
         yield Static("", id="confirm-bar")
         yield Footer()
+
+    def _rebuild_rows(self) -> None:
+        self._all_rows = []
+        self._repo_colors = {}
+        for i, (name, path, branches) in enumerate(self.repo_data):
+            self._repo_colors[name] = REPO_COLORS[i % len(REPO_COLORS)]
+            for b in branches:
+                self._all_rows.append((name, path, b))
 
     def _scoped_rows(self) -> list[tuple[str, Path, BranchInfo]]:
         if not self._show_all and self._current_repo:
@@ -142,9 +151,62 @@ class GbbApp(App):
             "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit",
             "Cleanup",
         )
-        self._populate(self._scoped_rows())
+
+        valid_repos = [p for p in self._config.repos if p.exists()]
+
+        current_repo_path: Path | None = None
+        for rp in valid_repos:
+            try:
+                self._cwd.relative_to(rp)
+                current_repo_path = rp
+                self._current_repo = rp.name
+                break
+            except ValueError:
+                continue
+
+        if not self._force_show_all:
+            self._show_all = self._current_repo is None
+
+        if current_repo_path and not self._force_show_all:
+            branches = discover_repo(current_repo_path, self._config.recent_days, self._cwd)
+            if branches:
+                self.repo_data = [(current_repo_path.name, current_repo_path, branches)]
+                self._rebuild_rows()
+            self._populate(self._scoped_rows())
+            other_repos = [rp for rp in valid_repos if rp != current_repo_path]
+            if other_repos:
+                self._loading_others = True
+                self._discover_repos_background(other_repos)
+        else:
+            self._loading_others = True
+            self._discover_repos_background(valid_repos)
+            self.notify("Discovering repos...", timeout=3)
+
         self._update_scope_label()
         table.focus()
+
+    @work(thread=True, exclusive=True, group="discovery")
+    def _discover_repos_background(self, repos: list[Path]) -> None:
+        worker = get_current_worker()
+        with ThreadPoolExecutor() as pool:
+            results = list(pool.map(
+                lambda rp: (rp.name, rp, discover_repo(rp, self._config.recent_days, self._cwd)),
+                repos,
+            ))
+        if worker.is_cancelled:
+            return
+        new_data = [(name, path, branches) for name, path, branches in results if branches]
+        self.call_from_thread(self._merge_discovered, new_data)
+
+    def _merge_discovered(self, new_data: list[tuple[str, Path, list[BranchInfo]]]) -> None:
+        existing_names = {name for name, _, _ in self.repo_data}
+        for name, path, branches in new_data:
+            if name not in existing_names:
+                self.repo_data.append((name, path, branches))
+        self._rebuild_rows()
+        self._loading_others = False
+        if self._show_all or self._current_repo is None:
+            self._populate(self._scoped_rows())
 
     def _populate(self, rows: list[tuple[str, Path, BranchInfo]]) -> None:
         table = self.query_one(DataTable)
@@ -221,6 +283,8 @@ class GbbApp(App):
             return
         self._show_all = not self._show_all
         self._update_scope_label()
+        if self._show_all and self._loading_others:
+            self.notify("Loading other repos...", timeout=2)
         if self.filtering:
             query = self.query_one("#filter-bar", Input).value
             self._apply_filter(query)
@@ -286,7 +350,7 @@ class GbbApp(App):
         if branch.worktree:
             dirty = is_dirty(branch.worktree.path)
             has_files = has_non_ignored_files(
-                branch.worktree.path, self._worktree_ignore
+                branch.worktree.path, self._config.worktree_ignore
             )
             if dirty or has_files:
                 self._pending_delete = (repo_name, repo_path, branch)
