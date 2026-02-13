@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, Input, Static
@@ -341,7 +342,7 @@ class GbbApp(App):
         else:
             self._populate(self._scoped_rows())
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         if self._pending_delete is not None:
             if event.key == "y":
                 repo_name, repo_path, branch = self._pending_delete
