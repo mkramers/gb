@@ -305,8 +305,7 @@ class GbbApp(App):
                 self.notify(f"Error: {err}", timeout=5)
                 return
 
-        force = not branch.deletable
-        err = delete_branch(repo_path, branch.name, force=force)
+        err = delete_branch(repo_path, branch.name, force=True)
         if err:
             self.notify(f"Error: {err}", timeout=5)
             return
