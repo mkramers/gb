@@ -352,6 +352,7 @@ class GbbApp(App):
             self._populate(self._scoped_rows())
 
     def action_quit_app(self) -> None:
+        self.workers.cancel_all()
         self.exit()
 
     def action_cancel(self) -> None:
@@ -360,6 +361,7 @@ class GbbApp(App):
         elif self.filtering:
             self._close_filter()
         else:
+            self.workers.cancel_all()
             self.exit()
 
     def _get_cursor_row_data(self) -> tuple[str, Path, BranchInfo] | None:
