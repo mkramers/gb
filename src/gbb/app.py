@@ -183,6 +183,7 @@ class GbbApp(App):
             self.notify("Discovering repos...", timeout=3)
 
         self._update_scope_label()
+        self.set_interval(5, self._refresh_tick)
         table.focus()
 
     @work(thread=True, exclusive=True, group="discovery")
@@ -207,6 +208,65 @@ class GbbApp(App):
         self._loading_others = False
         if self._show_all or self._current_repo is None:
             self._populate(self._scoped_rows())
+
+    def _refresh_tick(self) -> None:
+        if self._pending_delete is not None:
+            return
+        if self._loading_others:
+            return
+        if not self.repo_data:
+            return
+        self._refresh_repos()
+
+    @work(thread=True, exclusive=True, group="refresh")
+    def _refresh_repos(self) -> None:
+        worker = get_current_worker()
+        repo_paths = [(name, path) for name, path, _ in self.repo_data]
+        with ThreadPoolExecutor() as pool:
+            results = list(pool.map(
+                lambda item: (item[0], item[1], discover_repo(item[1], self._config.recent_days, self._cwd)),
+                repo_paths,
+            ))
+        if worker.is_cancelled:
+            return
+        new_data = [(name, path, branches) for name, path, branches in results if branches]
+        self.call_from_thread(self._apply_refresh, new_data)
+
+    def _apply_refresh(self, new_data: list[tuple[str, Path, list[BranchInfo]]]) -> None:
+        if self._pending_delete is not None:
+            return
+
+        table = self.query_one(DataTable)
+        cursor_key: str | None = None
+        cursor_row_idx = table.cursor_row
+        if table.row_count > 0:
+            row_keys = list(table.rows.keys())
+            if cursor_row_idx < len(row_keys):
+                cursor_key = str(row_keys[cursor_row_idx].value)
+
+        self.repo_data = new_data
+        self._rebuild_rows()
+
+        for name, path, branches in self.repo_data:
+            for b in branches:
+                if b.is_current:
+                    self._current_repo = name
+                    break
+
+        if self.filtering:
+            query = self.query_one("#filter-bar", Input).value
+            self._apply_filter(query)
+        else:
+            self._populate(self._scoped_rows())
+
+        if cursor_key and table.row_count > 0:
+            row_keys = list(table.rows.keys())
+            for i, rk in enumerate(row_keys):
+                if str(rk.value) == cursor_key:
+                    table.move_cursor(row=i)
+                    return
+        if table.row_count > 0:
+            table.move_cursor(row=min(cursor_row_idx, table.row_count - 1))
 
     def _populate(self, rows: list[tuple[str, Path, BranchInfo]]) -> None:
         table = self.query_one(DataTable)
