@@ -548,6 +548,7 @@ class GbbApp(App):
         self.exit((path, branch_name, has_worktree))
 
     def action_cursor_down(self) -> None:
+        self._show_footer_briefly()
         table = self.query_one(DataTable)
         if table.row_count == 0:
             return
@@ -557,6 +558,7 @@ class GbbApp(App):
             table.action_cursor_down()
 
     def action_cursor_up(self) -> None:
+        self._show_footer_briefly()
         table = self.query_one(DataTable)
         if table.row_count == 0:
             return
@@ -566,6 +568,7 @@ class GbbApp(App):
             table.action_cursor_up()
 
     def action_prev_group(self) -> None:
+        self._show_footer_briefly()
         table = self.query_one(DataTable)
         current = table.cursor_row
         for idx in reversed(self._group_indices):
@@ -576,6 +579,7 @@ class GbbApp(App):
             table.move_cursor(row=self._group_indices[-1])
 
     def action_next_group(self) -> None:
+        self._show_footer_briefly()
         table = self.query_one(DataTable)
         current = table.cursor_row
         for idx in self._group_indices:
