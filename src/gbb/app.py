@@ -4,9 +4,10 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import DataTable, Footer, Header, Input
+from textual.widgets import DataTable, Footer, Header, Input, Static
 
-from gbb.git import BranchInfo
+from gbb.cleanup import delete_branch, delete_worktree, has_non_ignored_files
+from gbb.git import BranchInfo, is_dirty
 
 REPO_COLORS = [
     "#50fa7b",
@@ -64,6 +65,7 @@ class GbbApp(App):
         Binding("slash", "start_filter", "Filter", show=True),
         Binding("a", "toggle_scope", "All repos", show=True),
         Binding("escape", "cancel", "Cancel", show=True),
+        Binding("d", "delete_branch", "Delete", show=True),
     ]
 
     CSS = """
@@ -85,16 +87,31 @@ class GbbApp(App):
     #filter-bar.visible {
         display: block;
     }
+
+    #confirm-bar {
+        dock: bottom;
+        height: auto;
+        min-height: 1;
+        display: none;
+        background: $surface;
+    }
+
+    #confirm-bar.visible {
+        display: block;
+    }
     """
 
     def __init__(
         self,
         repo_data: list[tuple[str, Path, list[BranchInfo]]],
         current_repo: str | None = None,
+        worktree_ignore: list[str] | None = None,
     ):
         super().__init__()
         self.repo_data = repo_data
         self._current_repo = current_repo
+        self._worktree_ignore = worktree_ignore or []
+        self._pending_delete: tuple[str, Path, BranchInfo] | None = None
         self._show_all = current_repo is None
         self.filtering: bool = False
         self._repo_colors: dict[str, str] = {}
@@ -110,6 +127,7 @@ class GbbApp(App):
         yield Header()
         yield DataTable(cursor_type="row")
         yield Input(placeholder="/filter branches...", id="filter-bar")
+        yield Static("", id="confirm-bar")
         yield Footer()
 
     def _scoped_rows(self) -> list[tuple[str, Path, BranchInfo]]:
@@ -212,10 +230,137 @@ class GbbApp(App):
         self.exit()
 
     def action_cancel(self) -> None:
-        if self.filtering:
+        if self._pending_delete is not None:
+            self._dismiss_confirm()
+        elif self.filtering:
             self._close_filter()
         else:
             self.exit()
+
+    def _get_cursor_row_data(self) -> tuple[str, Path, BranchInfo] | None:
+        table = self.query_one(DataTable)
+        if table.row_count == 0:
+            return None
+        row_keys = list(table.rows.keys())
+        key = str(row_keys[table.cursor_row].value)
+        parts = key.split(":", 2)
+        repo_name = parts[0]
+        branch_name = parts[1]
+        for rn, rp, b in self._all_rows:
+            if rn == repo_name and b.name == branch_name:
+                return (rn, rp, b)
+        return None
+
+    def action_delete_branch(self) -> None:
+        if self.filtering or self._pending_delete is not None:
+            return
+
+        data = self._get_cursor_row_data()
+        if not data:
+            return
+
+        repo_name, repo_path, branch = data
+
+        if branch.is_current:
+            self.notify("Cannot delete current branch", timeout=3)
+            return
+
+        for rn, rp, branches in self.repo_data:
+            if rn == repo_name:
+                for br in branches:
+                    if br.name in ("main", "master") and branch.name == br.name:
+                        self.notify("Cannot delete main branch", timeout=3)
+                        return
+                break
+
+        if branch.deletable:
+            self._try_delete(repo_name, repo_path, branch)
+        else:
+            self._pending_delete = (repo_name, repo_path, branch)
+            self._show_confirm(
+                f"'{branch.name}' not detected as merged. Force delete? [y/n]"
+            )
+
+    def _try_delete(self, repo_name: str, repo_path: Path, branch: BranchInfo) -> None:
+        if branch.worktree:
+            dirty = is_dirty(branch.worktree.path)
+            has_files = has_non_ignored_files(
+                branch.worktree.path, self._worktree_ignore
+            )
+            if dirty or has_files:
+                self._pending_delete = (repo_name, repo_path, branch)
+                reasons = []
+                if dirty:
+                    reasons.append("uncommitted changes")
+                if has_files:
+                    reasons.append("files outside ignore list")
+                self._show_confirm(
+                    f"Worktree has {' and '.join(reasons)}. Delete? [y/n]"
+                )
+                return
+
+            err = delete_worktree(repo_path, branch.worktree.path)
+            if err:
+                self.notify(f"Error: {err}", timeout=5)
+                return
+
+        force = not branch.deletable
+        err = delete_branch(repo_path, branch.name, force=force)
+        if err:
+            self.notify(f"Error: {err}", timeout=5)
+            return
+
+        self._remove_row(repo_name, branch.name)
+        self.notify(f"Deleted {branch.name}", timeout=3)
+
+    def _show_confirm(self, message: str) -> None:
+        bar = self.query_one("#confirm-bar", Static)
+        bar.update(message)
+        bar.add_class("visible")
+
+    def _dismiss_confirm(self) -> None:
+        self._pending_delete = None
+        bar = self.query_one("#confirm-bar", Static)
+        bar.remove_class("visible")
+        bar.update("")
+
+    def _remove_row(self, repo_name: str, branch_name: str) -> None:
+        self._all_rows = [
+            (rn, rp, b) for rn, rp, b in self._all_rows
+            if not (rn == repo_name and b.name == branch_name)
+        ]
+        for i, (rn, rp, branches) in enumerate(self.repo_data):
+            if rn == repo_name:
+                self.repo_data[i] = (
+                    rn, rp, [b for b in branches if b.name != branch_name]
+                )
+                break
+        if self.filtering:
+            query = self.query_one("#filter-bar", Input).value
+            self._apply_filter(query)
+        else:
+            self._populate(self._scoped_rows())
+
+    def on_key(self, event) -> None:
+        if self._pending_delete is not None:
+            if event.key == "y":
+                repo_name, repo_path, branch = self._pending_delete
+                self._dismiss_confirm()
+                if branch.worktree:
+                    err = delete_worktree(repo_path, branch.worktree.path)
+                    if err:
+                        self.notify(f"Error: {err}", timeout=5)
+                        return
+                err = delete_branch(repo_path, branch.name, force=True)
+                if err:
+                    self.notify(f"Error: {err}", timeout=5)
+                    return
+                self._remove_row(repo_name, branch.name)
+                self.notify(f"Deleted {branch.name}", timeout=3)
+            elif event.key == "n" or event.key == "escape":
+                self._dismiss_confirm()
+            event.prevent_default()
+            event.stop()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         key = str(event.row_key.value)

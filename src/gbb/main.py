@@ -51,7 +51,7 @@ def main():
 
     RESULT_FILE.unlink(missing_ok=True)
 
-    app = GbbApp(repo_data, current_repo=current_repo_name)
+    app = GbbApp(repo_data, current_repo=current_repo_name, worktree_ignore=config.worktree_ignore)
     result = app.run()
 
     if result:
