@@ -7,11 +7,18 @@ import yaml
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "gbb" / "config.yaml"
 
+DEFAULT_WORKTREE_IGNORE = [
+    "node_modules", ".venv", "venv", "__pycache__", ".tox",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    "target", "dist", "build", ".next", ".nuxt",
+]
+
 
 @dataclass
 class Config:
     recent_days: int
     repos: list[Path]
+    worktree_ignore: list[str]
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
@@ -25,4 +32,5 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     return Config(
         recent_days=raw.get("recent_days", 14),
         repos=[Path(p).expanduser() for p in raw["repos"]],
+        worktree_ignore=DEFAULT_WORKTREE_IGNORE + raw.get("worktree_ignore", []),
     )

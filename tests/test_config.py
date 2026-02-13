@@ -24,6 +24,28 @@ def test_load_config_defaults(tmp_path):
     assert config.recent_days == 14
 
 
+def test_load_config_worktree_ignore(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "repos:\n"
+        "  - ~/projects/app\n"
+        "worktree_ignore:\n"
+        "  - .custom_cache\n"
+        "  - vendor\n"
+    )
+    config = load_config(config_file)
+    assert ".custom_cache" in config.worktree_ignore
+    assert "vendor" in config.worktree_ignore
+
+
+def test_load_config_worktree_ignore_defaults(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("repos:\n  - ~/projects/app\n")
+    config = load_config(config_file)
+    assert "node_modules" in config.worktree_ignore
+    assert ".venv" in config.worktree_ignore
+
+
 def test_load_config_missing():
     import pytest
 
