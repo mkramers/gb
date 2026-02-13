@@ -180,7 +180,6 @@ class GbbApp(App):
         else:
             self._loading_others = True
             self._discover_repos_background(valid_repos)
-            self.notify("Discovering repos...", timeout=3)
 
         self._update_scope_label()
         self.set_interval(5, self._refresh_tick)
@@ -232,8 +231,26 @@ class GbbApp(App):
         new_data = [(name, path, branches) for name, path, branches in results if branches]
         self.call_from_thread(self._apply_refresh, new_data)
 
+    @staticmethod
+    def _data_fingerprint(data: list[tuple[str, Path, list["BranchInfo"]]]) -> tuple:
+        rows = []
+        for name, _, branches in data:
+            for b in branches:
+                rows.append((
+                    name, b.name, b.timestamp, b.dirty,
+                    b.ahead_upstream, b.behind_upstream,
+                    b.ahead_main, b.behind_main,
+                    b.deletable, b.delete_reason,
+                    str(b.worktree.path) if b.worktree else "",
+                    b.commit,
+                ))
+        return tuple(rows)
+
     def _apply_refresh(self, new_data: list[tuple[str, Path, list[BranchInfo]]]) -> None:
         if self._pending_delete is not None:
+            return
+
+        if self._data_fingerprint(new_data) == self._data_fingerprint(self.repo_data):
             return
 
         table = self.query_one(DataTable)
