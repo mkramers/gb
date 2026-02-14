@@ -396,6 +396,8 @@ class GbbApp(App):
             "Cleanup",
         )
 
+        self._update_effective_cwd()
+
         valid_repos = [p for p in self._config.repos if p.exists()]
 
         current_repo_path: Path | None = None
