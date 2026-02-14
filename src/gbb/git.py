@@ -23,6 +23,7 @@ class BranchInfo:
     behind_upstream: int = 0
     ahead_main: int = 0
     behind_main: int = 0
+    is_default: bool = False
     deletable: bool = False
     delete_reason: str | None = None
 
@@ -174,6 +175,9 @@ def discover_repo(
             info.dirty = is_dirty(wt.path)
         elif info.timestamp < cutoff and name not in pinned:
             continue
+
+        if main_branch and name == main_branch:
+            info.is_default = True
 
         if main_branch and name != main_branch:
             info.ahead_main, info.behind_main = ahead_behind(

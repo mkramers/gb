@@ -71,9 +71,7 @@ def classify_window(foreground_processes: list[dict]) -> tuple[str, str]:
     return ("busy", binary)
 
 
-def get_sibling_windows() -> list[KittyWindow]:
-    """Get all windows in the same tab, excluding gbb's own window."""
-    my_id = self_window_id()
+def _kitty_ls() -> list[dict]:
     try:
         result = subprocess.run(
             _kitten_cmd("ls"),
@@ -96,9 +94,15 @@ def get_sibling_windows() -> list[KittyWindow]:
         raise KittyError(f"kitten @ ls failed: {stderr}")
 
     try:
-        data = json.loads(result.stdout)
+        return json.loads(result.stdout)
     except json.JSONDecodeError:
         raise KittyError("Failed to parse kitten @ ls output")
+
+
+def get_sibling_windows() -> list[KittyWindow]:
+    """Get all windows in the same tab, excluding gbb's own window."""
+    my_id = self_window_id()
+    data = _kitty_ls()
 
     for os_window in data:
         for tab in os_window.get("tabs", []):
@@ -185,14 +189,18 @@ def restart_claude_pane(
 
 
 def switch_all_panes(target_path: Path, checkout_branch: str | None = None) -> SwitchResult:
-    """Switch all sibling shell panes. Returns result with claude windows for caller to handle."""
+    """Switch all sibling shell panes. Only the first shell pane does checkout to avoid lock races."""
     result = SwitchResult()
     windows = get_sibling_windows()
+    checked_out = False
 
     for w in windows:
         if w.window_type == "shell":
-            if switch_pane(w.id, target_path, checkout_branch):
+            branch = checkout_branch if not checked_out else None
+            if switch_pane(w.id, target_path, branch):
                 result.switched += 1
+                if branch:
+                    checked_out = True
             else:
                 result.skipped.append(f"{w.foreground_command} (pane {w.id})")
         elif w.window_type == "claude":
@@ -203,13 +211,52 @@ def switch_all_panes(target_path: Path, checkout_branch: str | None = None) -> S
     return result
 
 
+def focus_repo_tab(repo_name: str) -> bool:
+    """Focus an existing tab whose title matches repo_name. Returns True if found."""
+    data = _kitty_ls()
+    for os_window in data:
+        for tab in os_window.get("tabs", []):
+            title = tab.get("title", "")
+            if title == repo_name or title.startswith(f"{repo_name} ("):
+                windows = tab.get("windows", [])
+                if windows:
+                    wid = windows[0]["id"]
+                    try:
+                        subprocess.run(
+                            _kitten_cmd("focus-window", f"--match=id:{wid}"),
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        return True
+                    except (subprocess.TimeoutExpired, FileNotFoundError):
+                        pass
+    return False
+
+
+def next_tab_title(repo_name: str) -> str:
+    """Return a unique tab title like 'repo (2)', 'repo (3)', etc."""
+    data = _kitty_ls()
+    existing: set[str] = set()
+    for os_window in data:
+        for tab in os_window.get("tabs", []):
+            existing.add(tab.get("title", ""))
+    if repo_name not in existing:
+        return repo_name
+    n = 2
+    while f"{repo_name} ({n})" in existing:
+        n += 1
+    return f"{repo_name} ({n})"
+
+
 def create_workspace_tab(
     repo_name: str,
     repo_path: Path,
     selected_dir: Path,
     checkout_branch: str | None = None,
+    tab_title: str | None = None,
+    start_claude: bool = True,
 ) -> None:
     """Create a new kitty tab with claude, gbb, and shell panes."""
+    title = tab_title or repo_name
 
     def run(args: list[str]) -> str:
         result = subprocess.run(args, capture_output=True, text=True, timeout=5)
@@ -217,9 +264,9 @@ def create_workspace_tab(
             raise KittyError(f"kitten command failed: {result.stderr.strip()}")
         return result.stdout.strip()
 
-    # Step 1: new tab with left pane (claude)
-    claude_id = run(_kitten_cmd(
-        "launch", "--type=tab", f"--tab-title={repo_name}",
+    # Step 1: new tab with left pane (claude / shell)
+    left_id = run(_kitten_cmd(
+        "launch", "--type=tab", f"--tab-title={title}",
         f"--cwd={selected_dir}",
     ))
 
@@ -239,16 +286,18 @@ def create_workspace_tab(
         f"--match=id:{shell_id}",
     ))
 
-    # Step 5: send commands to panes
+    # Step 5: send commands to panes (only one pane does checkout to avoid lock races)
     if checkout_branch:
-        send_text(int(claude_id), f"git checkout {checkout_branch} && claude --continue\n")
-        send_text(int(shell_id), f"git checkout {checkout_branch}\n")
-    else:
-        send_text(int(claude_id), "claude --continue\n")
+        if start_claude:
+            send_text(int(left_id), f"git checkout {checkout_branch} && claude --continue\n")
+        else:
+            send_text(int(left_id), f"git checkout {checkout_branch}\n")
+    elif start_claude:
+        send_text(int(left_id), "claude --continue\n")
     send_text(int(gbb_id), "gbb\n")
 
-    # Step 6: focus claude pane
-    run(_kitten_cmd("focus-window", f"--match=id:{claude_id}"))
+    # Step 6: focus left pane
+    run(_kitten_cmd("focus-window", f"--match=id:{left_id}"))
 
 
 def clear_idle_panes() -> int:

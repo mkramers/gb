@@ -13,14 +13,16 @@ from textual.widgets import DataTable, Footer, Header, Input, Static
 from textual.worker import get_current_worker
 
 from gbb.cleanup import delete_branch, delete_worktree, list_non_ignored_entries
-from gbb.config import Config
+from gbb.config import Config, WorkspaceConfig
 from gbb.git import BranchInfo, discover_repo, fetch_repo, is_dirty
 from gbb.kitty import (
     KittyError,
     KittyWindow,
     clear_idle_panes,
     create_workspace_tab,
+    focus_repo_tab,
     is_kitty,
+    next_tab_title,
     restart_claude_pane,
     switch_all_panes,
 )
@@ -167,25 +169,119 @@ class ClaudeConfirmScreen(ModalScreen[str]):
         event.stop()
 
 
+class WorkspaceOptionsScreen(ModalScreen[WorkspaceConfig | None]):
+    """Returns WorkspaceConfig on confirm, None on cancel."""
+
+    CSS = """
+    WorkspaceOptionsScreen {
+        align: center middle;
+    }
+    #workspace-dialog {
+        width: 40;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    def __init__(self, defaults: WorkspaceConfig):
+        super().__init__()
+        self._start_claude = defaults.start_claude
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="workspace-dialog"):
+            yield Static(id="ws-content")
+
+    def on_mount(self) -> None:
+        self._refresh_content()
+
+    def _refresh_content(self) -> None:
+        check = "×" if self._start_claude else " "
+        self.query_one("#ws-content", Static).update(
+            f"[bold]New workspace[/bold]\n\n"
+            f"  [dim]space[/dim]  [{check}] Start claude\n\n"
+            f"[dim]enter[/dim] create  [dim]esc[/dim] cancel"
+        )
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "space":
+            self._start_claude = not self._start_claude
+            self._refresh_content()
+        elif event.key == "enter":
+            self.dismiss(WorkspaceConfig(start_claude=self._start_claude))
+        elif event.key == "escape":
+            self.dismiss(None)
+        event.prevent_default()
+        event.stop()
+
+
+class HelpScreen(ModalScreen[None]):
+    CSS = """
+    HelpScreen {
+        align: center middle;
+    }
+    #help-dialog {
+        width: 50;
+        height: auto;
+        max-height: 80%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    KEYS = [
+        ("enter", "Select branch"),
+        ("/", "Filter branches"),
+        ("a", "Toggle all repos / this repo"),
+        ("p", "Pin / unpin branch"),
+        ("d", "Delete branch"),
+        ("o", "Open in editor"),
+        ("T", "Open / switch to workspace tab"),
+        ("ctrl+t", "New workspace tab"),
+        ("K", "Clear idle panes"),
+        ("j/k", "Move cursor"),
+        ("alt+↑/↓", "Jump to prev/next repo"),
+        ("q/esc", "Quit"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        lines = ["[bold]Keybindings[/bold]", ""]
+        for key, desc in self.KEYS:
+            lines.append(f"  [bold]{key:<12}[/bold] {desc}")
+        lines.append("")
+        lines.append("[dim]press any key to close[/dim]")
+        with Vertical(id="help-dialog"):
+            yield Static("\n".join(lines))
+
+    def on_key(self, event: events.Key) -> None:
+        self.dismiss(None)
+        event.prevent_default()
+        event.stop()
+
+
 class GbbApp(App):
     TITLE = "gbb"
 
     BINDINGS = [
-        Binding("q", "quit_app", "Close", show=True, key_display="q/esc"),
+        Binding("question_mark", "show_help", "Help", show=True, key_display="?"),
+        Binding("q", "quit_app", "Quit", show=True, key_display="q"),
+        Binding("slash", "start_filter", "Filter", show=True),
+        Binding("a", "toggle_scope", "All repos", show=True),
+        Binding("T", "workspace", "Workspace", show=True),
         Binding("down", "cursor_down", "Down", show=False, priority=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("alt+up", "prev_group", "Prev repo", show=False),
         Binding("alt+down", "next_group", "Next repo", show=False),
-        Binding("slash", "start_filter", "Filter", show=True),
-        Binding("a", "toggle_scope", "All repos", show=True),
         Binding("escape", "cancel", "", show=False),
-        Binding("d", "delete_branch", "Delete", show=True),
-        Binding("o", "open_root", "Open", show=True),
-        Binding("p", "toggle_pin", "Pin", show=True),
-        Binding("K", "clear_panes", "Clear", show=True),
-        Binding("T", "new_workspace", "Workspace", show=True),
+        Binding("d", "delete_branch", "Delete", show=False),
+        Binding("o", "open_root", "Open", show=False),
+        Binding("p", "toggle_pin", "Pin", show=False),
+        Binding("K", "clear_panes", "Clear", show=False),
+        Binding("ctrl+t", "new_workspace", "New ws", show=False),
     ]
 
     CSS = """
@@ -245,6 +341,7 @@ class GbbApp(App):
         self._pins = load_pins()
         self._kitty_mode = is_kitty()
         self._active_branch_key: str | None = None
+        self._last_switch_path: Path | None = None
         self._pending_claude_windows: list[KittyWindow] = []
         self._pending_switch_path: Path | None = None
         self._pending_checkout_branch: str | None = None
@@ -273,14 +370,16 @@ class GbbApp(App):
             rows = [r for r in self._all_rows if r[0] == self._current_repo]
         else:
             rows = list(self._all_rows)
-        pinned = [r for r in rows if pin_key(r[0], r[2].name) in self._pins]
-        unpinned = [r for r in rows if pin_key(r[0], r[2].name) not in self._pins]
-        return pinned + unpinned
+        active = [r for r in rows if self._active_branch_key == f"{r[0]}:{r[2].name}"]
+        rest = [r for r in rows if self._active_branch_key != f"{r[0]}:{r[2].name}"]
+        pinned = [r for r in rest if pin_key(r[0], r[2].name) in self._pins]
+        unpinned = [r for r in rest if pin_key(r[0], r[2].name) not in self._pins]
+        return active + pinned + unpinned
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns(
-            "", "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit",
+            "", "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path",
             "Cleanup",
         )
 
@@ -397,7 +496,7 @@ class GbbApp(App):
                     name, b.name, b.timestamp, b.dirty,
                     b.ahead_upstream, b.behind_upstream,
                     b.ahead_main, b.behind_main,
-                    b.deletable, b.delete_reason,
+                    b.is_default, b.deletable, b.delete_reason,
                     str(b.worktree.path) if b.worktree else "",
                     b.commit,
                 ))
@@ -455,14 +554,28 @@ class GbbApp(App):
                 last_repo = repo_name
 
             color = self._repo_colors[repo_name]
-            tree = "⎇ " if b.worktree else "  "
 
+            is_pinned = pin_key(repo_name, b.name) in self._pins
+            is_active = (
+                self._kitty_mode
+                and self._active_branch_key == f"{repo_name}:{b.name}"
+            )
+
+            # First column: state icon (single purpose)
+            is_linked_worktree = b.worktree and b.worktree.path != repo_path
             if b.is_current:
-                prefix = "@ "
-            elif b.worktree:
-                prefix = "+ "
+                icon = Text("◉", style="#50fa7b")
+            elif is_active:
+                icon = Text("▸", style="#50fa7b")
+            elif is_pinned:
+                icon = Text("⚑", style="#f1fa8c")
+            elif is_linked_worktree:
+                icon = Text("⎇", style="#8be9fd")
             else:
-                prefix = "  "
+                icon = Text(" ")
+
+            # Branch name with optional default icon prefix
+            branch_prefix = "◆ " if b.is_default else ""
 
             if b.worktree:
                 status = Text("*", style="#ffb86c") if b.dirty else Text(" ")
@@ -472,43 +585,27 @@ class GbbApp(App):
             path_str = shorten_path(b.worktree.path) if b.worktree else ""
             wt_path = str(b.worktree.path) if b.worktree else ""
 
-            is_pinned = pin_key(repo_name, b.name) in self._pins
-            is_active = (
-                self._kitty_mode
-                and self._active_branch_key == f"{repo_name}:{b.name}"
-            )
-            if is_active and is_pinned:
-                pin_cell = Text("►⚑", style="#50fa7b")
-            elif is_active:
-                pin_cell = Text("►", style="#50fa7b")
-            elif is_pinned:
-                pin_cell = Text("⚑", style="#f1fa8c")
-            else:
-                pin_cell = Text("")
-
             if b.deletable:
-                repo_cell = Text(f"{tree}{repo_name}", style=f"dim {color}")
-                branch_cell = Text(f"{prefix}{b.name}", style="dim")
+                repo_cell = Text(repo_name, style=f"dim {color}")
+                branch_cell = Text(f"{branch_prefix}{b.name}", style="dim")
                 age_cell = Text(format_age(b.timestamp), style="dim")
                 status_cell = Text(status.plain, style="dim")
                 head_cell = Text(format_ahead_behind(b.ahead_upstream, b.behind_upstream).plain, style="dim")
                 main_cell = Text(format_ahead_behind(b.ahead_main, b.behind_main).plain, style="dim")
                 path_cell = Text(path_str, style="dim")
-                commit_cell = Text(b.commit, style="dim")
-                cleanup_cell = Text(b.delete_reason or "", style="dim")
+                cleanup_cell = Text(f"✕ {b.delete_reason}", style="#ff5555")
             else:
-                repo_cell = Text(f"{tree}{repo_name}", style=f"bold {color}")
-                branch_cell = f"{prefix}{b.name}"
+                repo_cell = Text(repo_name, style=f"bold {color}")
+                branch_cell = f"{branch_prefix}{b.name}"
                 age_cell = Text(format_age(b.timestamp), style="dim")
                 status_cell = status
                 head_cell = format_ahead_behind(b.ahead_upstream, b.behind_upstream)
                 main_cell = format_ahead_behind(b.ahead_main, b.behind_main)
                 path_cell = path_str
-                commit_cell = b.commit
                 cleanup_cell = Text("")
 
             table.add_row(
-                pin_cell,
+                icon,
                 repo_cell,
                 branch_cell,
                 age_cell,
@@ -516,7 +613,6 @@ class GbbApp(App):
                 head_cell,
                 main_cell,
                 path_cell,
-                commit_cell,
                 cleanup_cell,
                 key=f"{repo_name}:{b.name}:{wt_path}",
             )
@@ -540,6 +636,9 @@ class GbbApp(App):
             self._apply_filter(query)
         else:
             self._populate(self._scoped_rows())
+
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     def action_quit_app(self) -> None:
         self.workers.cancel_all()
@@ -619,32 +718,90 @@ class GbbApp(App):
                 timeout=2,
             )
 
-    def action_new_workspace(self) -> None:
+    def _workspace_params(self) -> tuple[str, Path, Path, str | None] | None:
         if not self._kitty_mode:
-            return
+            return None
         data = self._get_cursor_row_data()
         if not data:
-            return
+            return None
         repo_name, repo_path, branch = data
         if branch.worktree:
-            selected_dir = branch.worktree.path
-            checkout_branch = None
-        else:
-            selected_dir = repo_path
-            checkout_branch = branch.name
-        self._do_create_workspace(repo_name, repo_path, selected_dir, checkout_branch)
+            return repo_name, repo_path, branch.worktree.path, None
+        return repo_name, repo_path, repo_path, branch.name
+
+    def action_workspace(self) -> None:
+        params = self._workspace_params()
+        if not params:
+            return
+        self._do_try_focus_or_prompt(*params)
+
+    def action_new_workspace(self) -> None:
+        params = self._workspace_params()
+        if not params:
+            return
+        self._show_workspace_options(params, force_new=True)
 
     @work(thread=True, exclusive=True, group="kitty-workspace")
-    def _do_create_workspace(
+    def _do_try_focus_or_prompt(
         self, repo_name: str, repo_path: Path, selected_dir: Path, checkout_branch: str | None,
     ) -> None:
         try:
-            create_workspace_tab(repo_name, repo_path, selected_dir, checkout_branch)
+            if focus_repo_tab(repo_name):
+                self.call_from_thread(
+                    self.notify, f"Switched to {repo_name}", timeout=2,
+                )
+                return
         except KittyError as e:
             self.call_from_thread(self.notify, f"Workspace failed: {e}", timeout=5)
             return
         self.call_from_thread(
-            self.notify, f"Workspace opened for {repo_name}", timeout=3,
+            self._show_workspace_options,
+            (repo_name, repo_path, selected_dir, checkout_branch),
+            False,
+        )
+
+    def _show_workspace_options(
+        self,
+        params: tuple[str, Path, Path, str | None],
+        force_new: bool,
+    ) -> None:
+        def on_result(ws_config: WorkspaceConfig | None) -> None:
+            if ws_config is None:
+                return
+            self._config.workspace = ws_config
+            self._config.save_workspace()
+            if force_new:
+                self._do_create_workspace(*params, ws_config=ws_config, use_numbered_title=True)
+            else:
+                self._do_create_workspace(*params, ws_config=ws_config, use_numbered_title=False)
+
+        self.push_screen(
+            WorkspaceOptionsScreen(self._config.workspace),
+            on_result,
+        )
+
+    @work(thread=True, exclusive=True, group="kitty-workspace")
+    def _do_create_workspace(
+        self,
+        repo_name: str,
+        repo_path: Path,
+        selected_dir: Path,
+        checkout_branch: str | None,
+        ws_config: WorkspaceConfig | None = None,
+        use_numbered_title: bool = False,
+    ) -> None:
+        ws = ws_config or self._config.workspace
+        try:
+            title = next_tab_title(repo_name) if use_numbered_title else repo_name
+            create_workspace_tab(
+                repo_name, repo_path, selected_dir, checkout_branch,
+                tab_title=title, start_claude=ws.start_claude,
+            )
+        except KittyError as e:
+            self.call_from_thread(self.notify, f"Workspace failed: {e}", timeout=5)
+            return
+        self.call_from_thread(
+            self.notify, f"Workspace opened: {title}", timeout=3,
         )
 
     def action_open_root(self) -> None:
@@ -806,7 +963,7 @@ class GbbApp(App):
 
         if self._kitty_mode:
             self._active_branch_key = f"{repo_name}:{branch_name}"
-            self._repopulate()
+            self._repopulate(follow_key=key)
             if has_worktree:
                 self._do_kitty_switch(Path(wt_path))
             else:
@@ -830,14 +987,23 @@ class GbbApp(App):
 
         self.exit((path, branch_name, has_worktree))
 
-    def _repopulate(self) -> None:
+    def _repopulate(self, follow_key: str | None = None) -> None:
         table = self.query_one(DataTable)
         cursor_row = table.cursor_row
+        if follow_key is None and table.row_count > 0:
+            row_keys = list(table.rows.keys())
+            if cursor_row < len(row_keys):
+                follow_key = str(row_keys[cursor_row].value)
         if self.filtering:
             query = self.query_one("#filter-bar", Input).value
             self._apply_filter(query)
         else:
             self._populate(self._scoped_rows())
+        if follow_key and table.row_count > 0:
+            for i, rk in enumerate(table.rows.keys()):
+                if str(rk.value) == follow_key:
+                    table.move_cursor(row=i)
+                    return
         if table.row_count > 0:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
 
@@ -851,6 +1017,9 @@ class GbbApp(App):
         self.call_from_thread(self._handle_switch_result, result, target_path, checkout_branch)
 
     def _handle_switch_result(self, result, target_path: Path, checkout_branch: str | None = None) -> None:
+        dir_changed = self._last_switch_path != target_path
+        self._last_switch_path = target_path
+
         parts = []
         if result.switched:
             n = result.switched
@@ -860,7 +1029,7 @@ class GbbApp(App):
         if parts:
             self.notify(". ".join(parts), timeout=3)
 
-        if result.claude_windows:
+        if result.claude_windows and dir_changed:
             self._pending_claude_windows = result.claude_windows
             self._pending_switch_path = target_path
             self._pending_checkout_branch = checkout_branch
