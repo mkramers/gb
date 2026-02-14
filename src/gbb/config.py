@@ -11,6 +11,7 @@ DEFAULT_WORKTREE_IGNORE = [
     "node_modules", ".venv", "venv", "__pycache__", ".tox",
     ".mypy_cache", ".pytest_cache", ".ruff_cache",
     "target", "dist", "build", ".next", ".nuxt",
+    ".claude",
 ]
 
 

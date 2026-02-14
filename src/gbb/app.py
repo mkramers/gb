@@ -1,3 +1,4 @@
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -6,12 +7,24 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
+from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Static
 from textual.worker import get_current_worker
 
-from gbb.cleanup import delete_branch, delete_worktree, has_non_ignored_files
+from gbb.cleanup import delete_branch, delete_worktree, list_non_ignored_entries
 from gbb.config import Config
-from gbb.git import BranchInfo, discover_repo, is_dirty
+from gbb.git import BranchInfo, discover_repo, fetch_repo, is_dirty
+from gbb.kitty import (
+    KittyError,
+    KittyWindow,
+    clear_idle_panes,
+    create_workspace_tab,
+    is_kitty,
+    restart_claude_pane,
+    switch_all_panes,
+)
+from gbb.pins import load_pins, pin_key, save_pins
 
 REPO_COLORS = [
     "#50fa7b",
@@ -55,6 +68,105 @@ def shorten_path(path: Path) -> str:
         return str(path)
 
 
+class DeleteConfirmScreen(ModalScreen[bool]):
+    CSS = """
+    DeleteConfirmScreen {
+        align: center middle;
+    }
+    #delete-dialog {
+        width: 60;
+        height: auto;
+        max-height: 80%;
+        border: thick $error;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    def __init__(
+        self,
+        branch_name: str,
+        worktree_path: str,
+        reasons: list[str],
+        entries: list[str],
+    ):
+        super().__init__()
+        self._branch_name = branch_name
+        self._worktree_path = worktree_path
+        self._reasons = reasons
+        self._entries = entries
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="delete-dialog"):
+            yield Static(self._build_content())
+
+    def _build_content(self) -> str:
+        lines = [f"[bold]Delete '{self._branch_name}'?[/bold]", ""]
+        lines.append(self._worktree_path)
+        if self._reasons:
+            lines.append("")
+            for reason in self._reasons:
+                lines.append(f"[yellow]  {reason}[/yellow]")
+        if self._entries:
+            lines.append("")
+            for entry in self._entries[:20]:
+                lines.append(f"  {entry}")
+            remaining = len(self._entries) - 20
+            if remaining > 0:
+                lines.append(f"  [dim]... and {remaining} more[/dim]")
+        lines.append("")
+        lines.append("[dim]y[/dim] delete  [dim]n[/dim] cancel")
+        return "\n".join(lines)
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "y":
+            self.dismiss(True)
+        elif event.key in ("n", "escape"):
+            self.dismiss(False)
+        event.prevent_default()
+        event.stop()
+
+
+class ClaudeConfirmScreen(ModalScreen[str]):
+    """Returns 'continue', 'resume', or '' (cancel)."""
+
+    CSS = """
+    ClaudeConfirmScreen {
+        align: center middle;
+    }
+    #claude-dialog {
+        width: 50;
+        height: auto;
+        border: thick $warning;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    def __init__(self, count: int):
+        super().__init__()
+        self._count = count
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="claude-dialog"):
+            s = "s" if self._count != 1 else ""
+            yield Static(
+                f"[bold]Claude running in {self._count} pane{s}[/bold]\n\n"
+                f"Kill + restart?\n\n"
+                f"[dim]c[/dim] --continue  [dim]r[/dim] --resume  [dim]n[/dim] skip"
+            )
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "c":
+            self.dismiss("continue")
+        elif event.key == "r":
+            self.dismiss("resume")
+        elif event.key in ("n", "escape"):
+            self.dismiss("")
+        event.prevent_default()
+        event.stop()
+
+
 class GbbApp(App):
     TITLE = "gbb"
 
@@ -70,6 +182,10 @@ class GbbApp(App):
         Binding("a", "toggle_scope", "All repos", show=True),
         Binding("escape", "cancel", "", show=False),
         Binding("d", "delete_branch", "Delete", show=True),
+        Binding("o", "open_root", "Open", show=True),
+        Binding("p", "toggle_pin", "Pin", show=True),
+        Binding("K", "clear_panes", "Clear", show=True),
+        Binding("T", "new_workspace", "Workspace", show=True),
     ]
 
     CSS = """
@@ -126,6 +242,12 @@ class GbbApp(App):
         self._show_all = show_all
         self._loading_others = False
         self._footer_timer = None
+        self._pins = load_pins()
+        self._kitty_mode = is_kitty()
+        self._active_branch_key: str | None = None
+        self._pending_claude_windows: list[KittyWindow] = []
+        self._pending_switch_path: Path | None = None
+        self._pending_checkout_branch: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -142,15 +264,23 @@ class GbbApp(App):
             for b in branches:
                 self._all_rows.append((name, path, b))
 
+    def _pinned_branches(self, repo_name: str) -> set[str]:
+        prefix = f"{repo_name}:"
+        return {key[len(prefix):] for key in self._pins if key.startswith(prefix)}
+
     def _scoped_rows(self) -> list[tuple[str, Path, BranchInfo]]:
         if not self._show_all and self._current_repo:
-            return [r for r in self._all_rows if r[0] == self._current_repo]
-        return self._all_rows
+            rows = [r for r in self._all_rows if r[0] == self._current_repo]
+        else:
+            rows = list(self._all_rows)
+        pinned = [r for r in rows if pin_key(r[0], r[2].name) in self._pins]
+        unpinned = [r for r in rows if pin_key(r[0], r[2].name) not in self._pins]
+        return pinned + unpinned
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns(
-            "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit",
+            "", "Repo", "Branch", "Age", "Status", "HEAD±", "main±", "Path", "Commit",
             "Cleanup",
         )
 
@@ -170,7 +300,10 @@ class GbbApp(App):
             self._show_all = self._current_repo is None
 
         if current_repo_path and not self._force_show_all:
-            branches = discover_repo(current_repo_path, self._config.recent_days, self._cwd)
+            branches = discover_repo(
+                current_repo_path, self._config.recent_days, self._cwd,
+                pinned=self._pinned_branches(current_repo_path.name),
+            )
             if branches:
                 self.repo_data = [(current_repo_path.name, current_repo_path, branches)]
                 self._rebuild_rows()
@@ -187,6 +320,7 @@ class GbbApp(App):
         self._update_scope_label()
         self.set_interval(5, self._refresh_tick)
         self._footer_timer = self.set_timer(3, self._hide_footer)
+        self._fetch_repos_background(valid_repos)
         table.focus()
 
     @work(thread=True, exclusive=True, group="discovery")
@@ -194,7 +328,10 @@ class GbbApp(App):
         worker = get_current_worker()
         with ThreadPoolExecutor() as pool:
             results = list(pool.map(
-                lambda rp: (rp.name, rp, discover_repo(rp, self._config.recent_days, self._cwd)),
+                lambda rp: (rp.name, rp, discover_repo(
+                    rp, self._config.recent_days, self._cwd,
+                    pinned=self._pinned_branches(rp.name),
+                )),
                 repos,
             ))
         if worker.is_cancelled:
@@ -212,6 +349,19 @@ class GbbApp(App):
         if self._show_all or self._current_repo is None:
             self._populate(self._scoped_rows())
 
+    @work(thread=True, exclusive=True, group="fetch")
+    def _fetch_repos_background(self, repos: list[Path]) -> None:
+        worker = get_current_worker()
+        with ThreadPoolExecutor() as pool:
+            list(pool.map(fetch_repo, repos))
+        if not worker.is_cancelled:
+            self.call_from_thread(self._post_fetch_refresh)
+
+    def _post_fetch_refresh(self) -> None:
+        if self._pending_delete is not None or self._loading_others:
+            return
+        self._refresh_repos()
+
     def _refresh_tick(self) -> None:
         if self._pending_delete is not None:
             return
@@ -227,7 +377,10 @@ class GbbApp(App):
         repo_paths = [(name, path) for name, path, _ in self.repo_data]
         with ThreadPoolExecutor() as pool:
             results = list(pool.map(
-                lambda item: (item[0], item[1], discover_repo(item[1], self._config.recent_days, self._cwd)),
+                lambda item: (item[0], item[1], discover_repo(
+                    item[1], self._config.recent_days, self._cwd,
+                    pinned=self._pinned_branches(item[0]),
+                )),
                 repo_paths,
             ))
         if worker.is_cancelled:
@@ -319,6 +472,20 @@ class GbbApp(App):
             path_str = shorten_path(b.worktree.path) if b.worktree else ""
             wt_path = str(b.worktree.path) if b.worktree else ""
 
+            is_pinned = pin_key(repo_name, b.name) in self._pins
+            is_active = (
+                self._kitty_mode
+                and self._active_branch_key == f"{repo_name}:{b.name}"
+            )
+            if is_active and is_pinned:
+                pin_cell = Text("►⚑", style="#50fa7b")
+            elif is_active:
+                pin_cell = Text("►", style="#50fa7b")
+            elif is_pinned:
+                pin_cell = Text("⚑", style="#f1fa8c")
+            else:
+                pin_cell = Text("")
+
             if b.deletable:
                 repo_cell = Text(f"{tree}{repo_name}", style=f"dim {color}")
                 branch_cell = Text(f"{prefix}{b.name}", style="dim")
@@ -341,6 +508,7 @@ class GbbApp(App):
                 cleanup_cell = Text("")
 
             table.add_row(
+                pin_cell,
                 repo_cell,
                 branch_cell,
                 age_cell,
@@ -422,42 +590,154 @@ class GbbApp(App):
                         return
                 break
 
-        if branch.deletable:
-            self._try_delete(repo_name, repo_path, branch)
+        if branch.worktree:
+            self._pending_delete = (repo_name, repo_path, branch)
+            self._prepare_worktree_delete(repo_name, repo_path, branch)
+        elif branch.deletable:
+            self._execute_delete(repo_name, repo_path, branch)
         else:
             self._pending_delete = (repo_name, repo_path, branch)
             self._show_confirm(
                 f"'{branch.name}' not detected as merged. Force delete? [y/n]"
             )
 
-    def _try_delete(self, repo_name: str, repo_path: Path, branch: BranchInfo) -> None:
-        if branch.worktree:
-            dirty = is_dirty(branch.worktree.path)
-            has_files = has_non_ignored_files(
-                branch.worktree.path, self._config.worktree_ignore
-            )
-            if dirty or has_files:
-                self._pending_delete = (repo_name, repo_path, branch)
-                reasons = []
-                if dirty:
-                    reasons.append("uncommitted changes")
-                if has_files:
-                    reasons.append("files outside ignore list")
-                self._show_confirm(
-                    f"Worktree has {' and '.join(reasons)}. Delete? [y/n]"
-                )
-                return
+    def action_clear_panes(self) -> None:
+        if not self._kitty_mode:
+            return
+        self._do_clear_panes()
 
+    @work(thread=True, exclusive=True, group="kitty-clear")
+    def _do_clear_panes(self) -> None:
+        try:
+            cleared = clear_idle_panes()
+        except KittyError:
+            return
+        if cleared:
+            self.call_from_thread(
+                self.notify,
+                f"Cleared {cleared} pane{'s' if cleared != 1 else ''}",
+                timeout=2,
+            )
+
+    def action_new_workspace(self) -> None:
+        if not self._kitty_mode:
+            return
+        data = self._get_cursor_row_data()
+        if not data:
+            return
+        repo_name, repo_path, branch = data
+        if branch.worktree:
+            selected_dir = branch.worktree.path
+            checkout_branch = None
+        else:
+            selected_dir = repo_path
+            checkout_branch = branch.name
+        self._do_create_workspace(repo_name, repo_path, selected_dir, checkout_branch)
+
+    @work(thread=True, exclusive=True, group="kitty-workspace")
+    def _do_create_workspace(
+        self, repo_name: str, repo_path: Path, selected_dir: Path, checkout_branch: str | None,
+    ) -> None:
+        try:
+            create_workspace_tab(repo_name, repo_path, selected_dir, checkout_branch)
+        except KittyError as e:
+            self.call_from_thread(self.notify, f"Workspace failed: {e}", timeout=5)
+            return
+        self.call_from_thread(
+            self.notify, f"Workspace opened for {repo_name}", timeout=3,
+        )
+
+    def action_open_root(self) -> None:
+        data = self._get_cursor_row_data()
+        if not data:
+            return
+        repo_name, repo_path, branch = data
+        path = branch.worktree.path if branch.worktree else repo_path
+        subprocess.Popen(
+            ["subl", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def action_toggle_pin(self) -> None:
+        if self.filtering or self._pending_delete is not None:
+            return
+        data = self._get_cursor_row_data()
+        if not data:
+            return
+        repo_name, repo_path, branch = data
+        key = pin_key(repo_name, branch.name)
+        if key in self._pins:
+            self._pins.discard(key)
+        else:
+            self._pins.add(key)
+        save_pins(self._pins)
+        if self.filtering:
+            query = self.query_one("#filter-bar", Input).value
+            self._apply_filter(query)
+        else:
+            self._populate(self._scoped_rows())
+
+    @work(thread=True, exclusive=True, group="delete-check")
+    def _prepare_worktree_delete(
+        self, repo_name: str, repo_path: Path, branch: BranchInfo
+    ) -> None:
+        dirty = is_dirty(branch.worktree.path)
+        entries = list_non_ignored_entries(
+            branch.worktree.path, self._config.worktree_ignore
+        )
+        self.call_from_thread(
+            self._show_delete_dialog, repo_name, repo_path, branch, dirty, entries
+        )
+
+    def _show_delete_dialog(
+        self,
+        repo_name: str,
+        repo_path: Path,
+        branch: BranchInfo,
+        dirty: bool,
+        entries: list[str],
+    ) -> None:
+        reasons: list[str] = []
+        if dirty:
+            reasons.append("uncommitted changes")
+        if entries:
+            reasons.append("untracked files")
+        if not branch.deletable:
+            reasons.append("not detected as merged")
+
+        if not reasons:
+            self._execute_delete(repo_name, repo_path, branch)
+            return
+
+        def on_result(confirmed: bool) -> None:
+            self._pending_delete = None
+            if confirmed:
+                self._execute_delete(repo_name, repo_path, branch)
+
+        self.push_screen(
+            DeleteConfirmScreen(
+                branch.name,
+                shorten_path(branch.worktree.path),
+                reasons,
+                entries,
+            ),
+            on_result,
+        )
+
+    def _execute_delete(
+        self, repo_name: str, repo_path: Path, branch: BranchInfo
+    ) -> None:
+        self._pending_delete = None
+        if branch.worktree:
             err = delete_worktree(repo_path, branch.worktree.path)
             if err:
                 self.notify(f"Error: {err}", timeout=5)
                 return
-
         err = delete_branch(repo_path, branch.name, force=True)
         if err:
             self.notify(f"Error: {err}", timeout=5)
             return
-
         self._remove_row(repo_name, branch.name)
         self.notify(f"Deleted {branch.name}", timeout=3)
 
@@ -503,34 +783,42 @@ class GbbApp(App):
     def on_key(self, event: events.Key) -> None:
         self._show_footer_briefly()
         if self._pending_delete is not None:
+            bar = self.query_one("#confirm-bar", Static)
+            if not bar.has_class("visible"):
+                return
             if event.key == "y":
                 repo_name, repo_path, branch = self._pending_delete
                 self._dismiss_confirm()
-                if branch.worktree:
-                    err = delete_worktree(repo_path, branch.worktree.path)
-                    if err:
-                        self.notify(f"Error: {err}", timeout=5)
-                        return
-                err = delete_branch(repo_path, branch.name, force=True)
-                if err:
-                    self.notify(f"Error: {err}", timeout=5)
-                    return
-                self._remove_row(repo_name, branch.name)
-                self.notify(f"Deleted {branch.name}", timeout=3)
-            elif event.key == "n" or event.key == "escape":
+                self._execute_delete(repo_name, repo_path, branch)
+            elif event.key in ("n", "escape"):
                 self._dismiss_confirm()
             event.prevent_default()
             event.stop()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         key = str(event.row_key.value)
-        # key format: "{repo_name}:{branch_name}:{wt_path}"
         parts = key.split(":", 2)
         repo_name = parts[0] if len(parts) > 0 else ""
         branch_name = parts[1] if len(parts) > 1 else ""
         wt_path = parts[2] if len(parts) > 2 else ""
 
         has_worktree = bool(wt_path)
+
+        if self._kitty_mode:
+            self._active_branch_key = f"{repo_name}:{branch_name}"
+            self._repopulate()
+            if has_worktree:
+                self._do_kitty_switch(Path(wt_path))
+            else:
+                repo_path = None
+                for name, rp, _ in self.repo_data:
+                    if name == repo_name:
+                        repo_path = rp
+                        break
+                if repo_path:
+                    self._do_kitty_switch(repo_path, checkout_branch=branch_name)
+            return
+
         if wt_path:
             path = wt_path
         else:
@@ -541,6 +829,73 @@ class GbbApp(App):
                     break
 
         self.exit((path, branch_name, has_worktree))
+
+    def _repopulate(self) -> None:
+        table = self.query_one(DataTable)
+        cursor_row = table.cursor_row
+        if self.filtering:
+            query = self.query_one("#filter-bar", Input).value
+            self._apply_filter(query)
+        else:
+            self._populate(self._scoped_rows())
+        if table.row_count > 0:
+            table.move_cursor(row=min(cursor_row, table.row_count - 1))
+
+    @work(thread=True, exclusive=True, group="kitty-switch")
+    def _do_kitty_switch(self, target_path: Path, checkout_branch: str | None = None) -> None:
+        try:
+            result = switch_all_panes(target_path, checkout_branch)
+        except KittyError as e:
+            self.call_from_thread(self.notify, str(e), timeout=5)
+            return
+        self.call_from_thread(self._handle_switch_result, result, target_path, checkout_branch)
+
+    def _handle_switch_result(self, result, target_path: Path, checkout_branch: str | None = None) -> None:
+        parts = []
+        if result.switched:
+            n = result.switched
+            parts.append(f"Switched {n} pane{'s' if n != 1 else ''}")
+        if result.skipped:
+            parts.append(f"Skipped: {', '.join(result.skipped)}")
+        if parts:
+            self.notify(". ".join(parts), timeout=3)
+
+        if result.claude_windows:
+            self._pending_claude_windows = result.claude_windows
+            self._pending_switch_path = target_path
+            self._pending_checkout_branch = checkout_branch
+
+            def on_claude_confirm(choice: str) -> None:
+                if choice:
+                    self._restart_claude_panes(claude_flag=choice)
+                else:
+                    self._pending_claude_windows = []
+                    self._pending_switch_path = None
+                    self._pending_checkout_branch = None
+
+            self.push_screen(
+                ClaudeConfirmScreen(len(result.claude_windows)),
+                on_claude_confirm,
+            )
+
+    @work(thread=True, exclusive=True, group="kitty-claude")
+    def _restart_claude_panes(self, claude_flag: str = "continue") -> None:
+        windows = list(self._pending_claude_windows)
+        path = self._pending_switch_path
+        checkout = self._pending_checkout_branch
+        self._pending_claude_windows = []
+        self._pending_switch_path = None
+        self._pending_checkout_branch = None
+        restarted = 0
+        for w in windows:
+            if restart_claude_pane(w, path, checkout, claude_flag=claude_flag):
+                restarted += 1
+        if restarted:
+            self.call_from_thread(
+                self.notify,
+                f"Restarted claude --{claude_flag} in {restarted} pane{'s' if restarted != 1 else ''}",
+                timeout=3,
+            )
 
     def action_cursor_down(self) -> None:
         self._show_footer_briefly()
