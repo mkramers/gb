@@ -310,6 +310,7 @@ class HelpScreen(ModalScreen[None]):
         ("o", "Open in editor"),
         ("T", "Open / switch to workspace tab"),
         ("ctrl+t", "New workspace tab"),
+        ("R", "Fetch all + refresh"),
         ("K", "Clear idle panes"),
         ("j/k", "Move cursor"),
         ("alt+↑/↓", "Jump to prev/next repo"),
@@ -353,6 +354,7 @@ class GbbApp(App):
         Binding("K", "clear_panes", "Clear", show=False),
         Binding("ctrl+t", "new_workspace", "New ws", show=False),
         Binding("c", "create_worktree", "Create wt", show=False),
+        Binding("R", "fetch_refresh", "Refresh", show=False),
     ]
 
     CSS = """
@@ -547,6 +549,12 @@ class GbbApp(App):
         if self._pending_delete is not None or self._loading_others:
             return
         self._refresh_repos()
+
+    def action_fetch_refresh(self) -> None:
+        repos = [path for _, path, _ in self.repo_data]
+        if repos:
+            self.notify("Fetching...", timeout=2)
+            self._fetch_repos_background(repos)
 
     def _refresh_tick(self) -> None:
         if self._pending_delete is not None:
