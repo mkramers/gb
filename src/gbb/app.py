@@ -14,7 +14,7 @@ from textual.worker import get_current_worker
 
 from gbb.cleanup import delete_branch, delete_worktree, list_non_ignored_entries
 from gbb.config import Config, WorkspaceConfig
-from gbb.git import BranchInfo, discover_repo, fetch_repo, is_dirty
+from gbb.git import BranchInfo, create_worktree, detect_main_branch, discover_repo, fetch_repo, is_dirty
 from gbb.kitty import (
     KittyError,
     KittyWindow,
@@ -217,6 +217,74 @@ class WorkspaceOptionsScreen(ModalScreen[WorkspaceConfig | None]):
         event.stop()
 
 
+class CreateWorktreeScreen(ModalScreen[tuple[str, str] | None]):
+    """Returns (branch_name, base_branch) on confirm, None on cancel."""
+
+    CSS = """
+    CreateWorktreeScreen {
+        align: center middle;
+    }
+    #create-wt-dialog {
+        width: 50;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #wt-branch-input {
+        margin: 0 0;
+    }
+    """
+
+    def __init__(self, default_branch: str, selected_branch: str):
+        super().__init__()
+        self._default_branch = default_branch
+        self._selected_branch = selected_branch
+        self._use_default = True
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="create-wt-dialog"):
+            yield Static(id="wt-header")
+            yield Input(placeholder="branch-name", id="wt-branch-input")
+            yield Static(id="wt-footer")
+
+    def on_mount(self) -> None:
+        self._refresh_content()
+        self.query_one("#wt-branch-input", Input).focus()
+
+    def _refresh_content(self) -> None:
+        if self._use_default:
+            base_text = f"  [bold]{self._default_branch}[/bold]  /  [dim]{self._selected_branch}[/dim]"
+        else:
+            base_text = f"  [dim]{self._default_branch}[/dim]  /  [bold]{self._selected_branch}[/bold]"
+        self.query_one("#wt-header", Static).update(
+            f"[bold]Create worktree[/bold]\n"
+        )
+        self.query_one("#wt-footer", Static).update(
+            f"\n  [dim]tab[/dim]  base: {base_text}\n\n"
+            f"[dim]enter[/dim] create  [dim]esc[/dim] cancel"
+        )
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "tab":
+            self._use_default = not self._use_default
+            self._refresh_content()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "escape":
+            self.dismiss(None)
+            event.prevent_default()
+            event.stop()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "wt-branch-input":
+            name = event.value.strip()
+            if not name:
+                return
+            base = self._default_branch if self._use_default else self._selected_branch
+            self.dismiss((name, base))
+
+
 class HelpScreen(ModalScreen[None]):
     CSS = """
     HelpScreen {
@@ -237,6 +305,7 @@ class HelpScreen(ModalScreen[None]):
         ("/", "Filter branches"),
         ("a", "Toggle all repos / this repo"),
         ("p", "Pin / unpin branch"),
+        ("c", "Create worktree"),
         ("d", "Delete branch"),
         ("o", "Open in editor"),
         ("T", "Open / switch to workspace tab"),
@@ -283,6 +352,7 @@ class GbbApp(App):
         Binding("p", "toggle_pin", "Pin", show=False),
         Binding("K", "clear_panes", "Clear", show=False),
         Binding("ctrl+t", "new_workspace", "New ws", show=False),
+        Binding("c", "create_worktree", "Create wt", show=False),
     ]
 
     CSS = """
@@ -759,6 +829,61 @@ class GbbApp(App):
         if not params:
             return
         self._show_workspace_options(params, force_new=True)
+
+    def action_create_worktree(self) -> None:
+        if self.filtering or self._pending_delete is not None:
+            return
+        data = self._get_cursor_row_data()
+        if not data:
+            return
+        repo_name, repo_path, branch = data
+        main_branch = detect_main_branch(repo_path)
+        if not main_branch:
+            self.notify("Could not detect main branch", timeout=3)
+            return
+
+        def on_result(result: tuple[str, str] | None) -> None:
+            if result is None:
+                return
+            branch_name, base = result
+            self._do_create_worktree(repo_name, repo_path, branch_name, base)
+
+        self.push_screen(
+            CreateWorktreeScreen(main_branch, branch.name),
+            on_result,
+        )
+
+    @work(thread=True, exclusive=True, group="create-worktree")
+    def _do_create_worktree(
+        self, repo_name: str, repo_path: Path, branch_name: str, base: str,
+    ) -> None:
+        sanitized = branch_name.replace("/", "-")
+        worktree_path = repo_path.parent / f"{repo_path.name}.{sanitized}"
+        if worktree_path.exists():
+            self.call_from_thread(
+                self.notify, f"Directory already exists: {worktree_path.name}", timeout=5,
+            )
+            return
+        err = create_worktree(repo_path, branch_name, base, worktree_path)
+        if err:
+            self.call_from_thread(self.notify, f"Error: {err}", timeout=5)
+            return
+        self.call_from_thread(
+            self.notify, f"Created worktree: {worktree_path.name}", timeout=3,
+        )
+        # Refresh table then open workspace tab
+        self._update_effective_cwd()
+        self.call_from_thread(self._post_create_worktree, repo_name, repo_path, worktree_path)
+
+    def _post_create_worktree(
+        self, repo_name: str, repo_path: Path, worktree_path: Path,
+    ) -> None:
+        self._refresh_repos()
+        if self._kitty_mode:
+            self._show_workspace_options(
+                (repo_name, repo_path, worktree_path, None),
+                force_new=False,
+            )
 
     @work(thread=True, exclusive=True, group="kitty-workspace")
     def _do_try_focus_or_prompt(

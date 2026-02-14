@@ -137,6 +137,17 @@ def is_ancestor(repo: Path, branch: str, ancestor: str) -> bool:
     return result.returncode == 0
 
 
+def create_worktree(repo: Path, branch_name: str, base: str, worktree_path: Path) -> str | None:
+    """Create a new branch + worktree. Returns error string or None on success."""
+    result = subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree_path), "-b", branch_name, base],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return result.stderr.strip()
+    return None
+
+
 def discover_repo(
     repo: Path, recent_days: int, cwd: Path, pinned: set[str] | None = None
 ) -> list[BranchInfo]:
