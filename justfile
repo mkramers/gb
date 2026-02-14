@@ -10,5 +10,8 @@ fmt:
 lint:
     uv run ruff check src/ tests/
 
+build:
+    uv cache clean gbb && uv tool install . --force
+
 run:
     uv run gbb

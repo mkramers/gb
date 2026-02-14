@@ -23,6 +23,7 @@ class BranchInfo:
     behind_upstream: int = 0
     ahead_main: int = 0
     behind_main: int = 0
+    is_default: bool = False
     deletable: bool = False
     delete_reason: str | None = None
 
@@ -71,6 +72,14 @@ def parse_tracking_status(output: str) -> dict[str, bool]:
         elif len(parts) == 1:
             gone[parts[0]] = False
     return gone
+
+
+def fetch_repo(repo: Path) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo), "fetch", "--all", "--prune"],
+        capture_output=True, text=True,
+        timeout=30,
+    )
 
 
 def run_git(repo: Path, *args: str) -> str:
@@ -128,9 +137,21 @@ def is_ancestor(repo: Path, branch: str, ancestor: str) -> bool:
     return result.returncode == 0
 
 
+def create_worktree(repo: Path, branch_name: str, base: str, worktree_path: Path) -> str | None:
+    """Create a new branch + worktree. Returns error string or None on success."""
+    result = subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree_path), "-b", branch_name, base],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return result.stderr.strip()
+    return None
+
+
 def discover_repo(
-    repo: Path, recent_days: int, cwd: Path
+    repo: Path, recent_days: int, cwd: Path, pinned: set[str] | None = None
 ) -> list[BranchInfo]:
+    pinned = pinned or set()
     wt_output = run_git(repo, "worktree", "list", "--porcelain")
     worktrees = parse_worktrees(wt_output)
 
@@ -163,8 +184,11 @@ def discover_repo(
                 str(wt.path) + "/"
             )
             info.dirty = is_dirty(wt.path)
-        elif info.timestamp < cutoff:
+        elif info.timestamp < cutoff and name not in pinned:
             continue
+
+        if main_branch and name == main_branch:
+            info.is_default = True
 
         if main_branch and name != main_branch:
             info.ahead_main, info.behind_main = ahead_behind(
@@ -183,7 +207,7 @@ def discover_repo(
                     repo, name, upstream
                 )
 
-        if name != main_branch and not info.is_current:
+        if name != main_branch and not info.is_current and not info.dirty:
             if gone_branches.get(name):
                 info.deletable = True
                 info.delete_reason = "upstream gone"

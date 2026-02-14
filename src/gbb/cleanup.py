@@ -30,3 +30,22 @@ def has_non_ignored_files(worktree: Path, ignore_patterns: list[str]) -> bool:
             continue
         return True
     return False
+
+
+def list_non_ignored_entries(worktree: Path, ignore_patterns: list[str]) -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "ls-files", "--others", "--exclude-standard"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return []
+    ignore = set(ignore_patterns)
+    entries = []
+    for line in result.stdout.strip().splitlines():
+        if not line:
+            continue
+        top_level = line.split("/")[0]
+        if top_level in ignore:
+            continue
+        entries.append(line)
+    return entries
