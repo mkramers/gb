@@ -21,6 +21,7 @@ from gbb.kitty import (
     clear_idle_panes,
     create_workspace_tab,
     focus_repo_tab,
+    get_sibling_cwd,
     is_kitty,
     next_tab_title,
     restart_claude_pane,
@@ -340,6 +341,7 @@ class GbbApp(App):
         self._footer_timer = None
         self._pins = load_pins()
         self._kitty_mode = is_kitty()
+        self._effective_cwd = cwd
         self._active_branch_key: str | None = None
         self._last_switch_path: Path | None = None
         self._pending_claude_windows: list[KittyWindow] = []
@@ -352,6 +354,17 @@ class GbbApp(App):
         yield Input(placeholder="/filter branches...", id="filter-bar")
         yield Static("", id="confirm-bar")
         yield Footer()
+
+    def _update_effective_cwd(self) -> None:
+        """Query sibling panes for consensus cwd. Call from background threads."""
+        if not self._kitty_mode:
+            return
+        try:
+            sibling_cwd = get_sibling_cwd()
+            if sibling_cwd:
+                self._effective_cwd = sibling_cwd
+        except KittyError:
+            pass
 
     def _rebuild_rows(self) -> None:
         self._all_rows = []
@@ -400,7 +413,7 @@ class GbbApp(App):
 
         if current_repo_path and not self._force_show_all:
             branches = discover_repo(
-                current_repo_path, self._config.recent_days, self._cwd,
+                current_repo_path, self._config.recent_days, self._effective_cwd,
                 pinned=self._pinned_branches(current_repo_path.name),
             )
             if branches:
@@ -425,10 +438,12 @@ class GbbApp(App):
     @work(thread=True, exclusive=True, group="discovery")
     def _discover_repos_background(self, repos: list[Path]) -> None:
         worker = get_current_worker()
+        self._update_effective_cwd()
+        cwd = self._effective_cwd
         with ThreadPoolExecutor() as pool:
             results = list(pool.map(
                 lambda rp: (rp.name, rp, discover_repo(
-                    rp, self._config.recent_days, self._cwd,
+                    rp, self._config.recent_days, cwd,
                     pinned=self._pinned_branches(rp.name),
                 )),
                 repos,
@@ -473,11 +488,13 @@ class GbbApp(App):
     @work(thread=True, exclusive=True, group="refresh")
     def _refresh_repos(self) -> None:
         worker = get_current_worker()
+        self._update_effective_cwd()
+        cwd = self._effective_cwd
         repo_paths = [(name, path) for name, path, _ in self.repo_data]
         with ThreadPoolExecutor() as pool:
             results = list(pool.map(
                 lambda item: (item[0], item[1], discover_repo(
-                    item[1], self._config.recent_days, self._cwd,
+                    item[1], self._config.recent_days, cwd,
                     pinned=self._pinned_branches(item[0]),
                 )),
                 repo_paths,

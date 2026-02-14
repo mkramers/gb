@@ -121,6 +121,36 @@ def get_sibling_windows() -> list[KittyWindow]:
     return []
 
 
+def get_sibling_cwd() -> Path | None:
+    """Get the most common cwd among idle shell panes in the same tab."""
+    my_id = self_window_id()
+    data = _kitty_ls()
+
+    for os_window in data:
+        for tab in os_window.get("tabs", []):
+            window_ids = [w["id"] for w in tab.get("windows", [])]
+            if my_id not in window_ids:
+                continue
+            cwds: list[str] = []
+            for w in tab["windows"]:
+                if w["id"] == my_id:
+                    continue
+                fg = w.get("foreground_processes", [])
+                wtype, _ = classify_window(fg)
+                if wtype == "shell":
+                    cwd = w.get("cwd", "")
+                    if cwd:
+                        cwds.append(cwd)
+            if not cwds:
+                return None
+            # Most common cwd wins
+            from collections import Counter
+            most_common = Counter(cwds).most_common(1)[0][0]
+            return Path(most_common)
+
+    return None
+
+
 def send_text(window_id: int, text: str) -> bool:
     try:
         result = subprocess.run(
