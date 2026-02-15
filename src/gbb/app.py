@@ -25,6 +25,7 @@ from gbb.kitty import (
     is_kitty,
     next_tab_title,
     restart_claude_pane,
+    set_tab_title,
     switch_all_panes,
 )
 from gbb.pins import load_pins, pin_key, save_pins
@@ -815,7 +816,8 @@ class GbbApp(App):
                 timeout=2,
             )
 
-    def _workspace_params(self) -> tuple[str, Path, Path, str | None] | None:
+    def _workspace_params(self) -> tuple[str, Path, Path, str | None, str, bool] | None:
+        """Returns (repo_name, repo_path, selected_dir, checkout_branch, branch_name, is_default)."""
         if not self._kitty_mode:
             return None
         data = self._get_cursor_row_data()
@@ -823,8 +825,8 @@ class GbbApp(App):
             return None
         repo_name, repo_path, branch = data
         if branch.worktree:
-            return repo_name, repo_path, branch.worktree.path, None
-        return repo_name, repo_path, repo_path, branch.name
+            return repo_name, repo_path, branch.worktree.path, None, branch.name, branch.is_default
+        return repo_name, repo_path, repo_path, branch.name, branch.name, branch.is_default
 
     def action_workspace(self) -> None:
         params = self._workspace_params()
@@ -881,26 +883,30 @@ class GbbApp(App):
         )
         # Refresh table then open workspace tab
         self._update_effective_cwd()
-        self.call_from_thread(self._post_create_worktree, repo_name, repo_path, worktree_path)
+        self.call_from_thread(self._post_create_worktree, repo_name, repo_path, worktree_path, branch_name)
 
     def _post_create_worktree(
-        self, repo_name: str, repo_path: Path, worktree_path: Path,
+        self, repo_name: str, repo_path: Path, worktree_path: Path, branch_name: str,
     ) -> None:
         self._refresh_repos()
         if self._kitty_mode:
             self._show_workspace_options(
-                (repo_name, repo_path, worktree_path, None),
+                (repo_name, repo_path, worktree_path, None, branch_name, False),
                 force_new=False,
             )
 
     @work(thread=True, exclusive=True, group="kitty-workspace")
     def _do_try_focus_or_prompt(
-        self, repo_name: str, repo_path: Path, selected_dir: Path, checkout_branch: str | None,
+        self, repo_name: str, repo_path: Path, selected_dir: Path,
+        checkout_branch: str | None, branch_name: str = "", is_default: bool = False,
     ) -> None:
         try:
-            if focus_repo_tab(repo_name):
+            wid = focus_repo_tab(repo_name)
+            if wid is not None:
+                title = self._make_tab_title(repo_name, branch_name or repo_name, is_default)
+                set_tab_title(title, match=f"id:{wid}")
                 self.call_from_thread(
-                    self.notify, f"Switched to {repo_name}", timeout=2,
+                    self.notify, f"Switched to {title}", timeout=2,
                 )
                 return
         except KittyError as e:
@@ -908,13 +914,13 @@ class GbbApp(App):
             return
         self.call_from_thread(
             self._show_workspace_options,
-            (repo_name, repo_path, selected_dir, checkout_branch),
+            (repo_name, repo_path, selected_dir, checkout_branch, branch_name, is_default),
             False,
         )
 
     def _show_workspace_options(
         self,
-        params: tuple[str, Path, Path, str | None],
+        params: tuple[str, Path, Path, str | None, str, bool],
         force_new: bool,
     ) -> None:
         def on_result(ws_config: WorkspaceConfig | None) -> None:
@@ -922,10 +928,12 @@ class GbbApp(App):
                 return
             self._config.workspace = ws_config
             self._config.save_workspace()
-            if force_new:
-                self._do_create_workspace(*params, ws_config=ws_config, use_numbered_title=True)
-            else:
-                self._do_create_workspace(*params, ws_config=ws_config, use_numbered_title=False)
+            repo_name, repo_path, selected_dir, checkout_branch, branch_name, is_default = params
+            self._do_create_workspace(
+                repo_name, repo_path, selected_dir, checkout_branch,
+                branch_name=branch_name, is_default=is_default,
+                ws_config=ws_config, use_numbered_title=force_new,
+            )
 
         self.push_screen(
             WorkspaceOptionsScreen(self._config.workspace),
@@ -939,21 +947,23 @@ class GbbApp(App):
         repo_path: Path,
         selected_dir: Path,
         checkout_branch: str | None,
+        branch_name: str = "",
+        is_default: bool = False,
         ws_config: WorkspaceConfig | None = None,
         use_numbered_title: bool = False,
     ) -> None:
         ws = ws_config or self._config.workspace
+        tab_title = self._make_tab_title(repo_name, branch_name or repo_name, is_default)
         try:
-            title = next_tab_title(repo_name) if use_numbered_title else repo_name
             create_workspace_tab(
                 repo_name, repo_path, selected_dir, checkout_branch,
-                tab_title=title, start_claude=ws.start_claude,
+                tab_title=tab_title, start_claude=ws.start_claude,
             )
         except KittyError as e:
             self.call_from_thread(self.notify, f"Workspace failed: {e}", timeout=5)
             return
         self.call_from_thread(
-            self.notify, f"Workspace opened: {title}", timeout=3,
+            self.notify, f"Workspace opened: {tab_title}", timeout=3,
         )
 
     def action_open_root(self) -> None:
@@ -1117,7 +1127,7 @@ class GbbApp(App):
             self._active_branch_key = f"{repo_name}:{branch_name}"
             self._repopulate(follow_key=key)
             if has_worktree:
-                self._do_kitty_switch(Path(wt_path))
+                self._do_kitty_switch(Path(wt_path), repo_name=repo_name, branch_name=branch_name)
             else:
                 repo_path = None
                 for name, rp, _ in self.repo_data:
@@ -1125,7 +1135,7 @@ class GbbApp(App):
                         repo_path = rp
                         break
                 if repo_path:
-                    self._do_kitty_switch(repo_path, checkout_branch=branch_name)
+                    self._do_kitty_switch(repo_path, checkout_branch=branch_name, repo_name=repo_name, branch_name=branch_name)
             return
 
         if wt_path:
@@ -1159,13 +1169,33 @@ class GbbApp(App):
         if table.row_count > 0:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
 
+    @staticmethod
+    def _make_tab_title(repo_name: str, branch_name: str, is_default: bool) -> str:
+        if is_default:
+            return repo_name
+        short = branch_name.rsplit("/", 1)[-1] if "/" in branch_name else branch_name
+        return f"{repo_name} ⎇ {short}"
+
     @work(thread=True, exclusive=True, group="kitty-switch")
-    def _do_kitty_switch(self, target_path: Path, checkout_branch: str | None = None) -> None:
+    def _do_kitty_switch(
+        self,
+        target_path: Path,
+        checkout_branch: str | None = None,
+        repo_name: str | None = None,
+        branch_name: str | None = None,
+    ) -> None:
         try:
             result = switch_all_panes(target_path, checkout_branch)
         except KittyError as e:
             self.call_from_thread(self.notify, str(e), timeout=5)
             return
+        if repo_name and branch_name:
+            is_default = any(
+                b.is_default and b.name == branch_name
+                for rn, _, b in self._all_rows
+                if rn == repo_name
+            )
+            set_tab_title(self._make_tab_title(repo_name, branch_name, is_default))
         self.call_from_thread(self._handle_switch_result, result, target_path, checkout_branch)
 
     def _handle_switch_result(self, result, target_path: Path, checkout_branch: str | None = None) -> None:

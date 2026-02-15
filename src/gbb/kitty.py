@@ -165,6 +165,22 @@ def send_text(window_id: int, text: str) -> bool:
         return False
 
 
+def set_tab_title(title: str, match: str | None = None) -> bool:
+    """Set a tab title. If match is given, target that tab (e.g. 'id:123')."""
+    cmd = ["set-tab-title"]
+    if match:
+        cmd.extend(["--match", match])
+    cmd.append(title)
+    try:
+        result = subprocess.run(
+            _kitten_cmd(*cmd),
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
 def _quote_path(path: Path) -> str:
     path_str = str(path)
     if " " in path_str or "'" in path_str:
@@ -241,13 +257,13 @@ def switch_all_panes(target_path: Path, checkout_branch: str | None = None) -> S
     return result
 
 
-def focus_repo_tab(repo_name: str) -> bool:
-    """Focus an existing tab whose title matches repo_name. Returns True if found."""
+def focus_repo_tab(repo_name: str) -> int | None:
+    """Focus an existing tab whose title starts with repo_name. Returns window id or None."""
     data = _kitty_ls()
     for os_window in data:
         for tab in os_window.get("tabs", []):
             title = tab.get("title", "")
-            if title == repo_name or title.startswith(f"{repo_name} ("):
+            if title == repo_name or title.startswith(f"{repo_name} "):
                 windows = tab.get("windows", [])
                 if windows:
                     wid = windows[0]["id"]
@@ -256,10 +272,10 @@ def focus_repo_tab(repo_name: str) -> bool:
                             _kitten_cmd("focus-window", f"--match=id:{wid}"),
                             capture_output=True, text=True, timeout=5,
                         )
-                        return True
+                        return wid
                     except (subprocess.TimeoutExpired, FileNotFoundError):
                         pass
-    return False
+    return None
 
 
 def next_tab_title(repo_name: str) -> str:
