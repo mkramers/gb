@@ -311,7 +311,9 @@ class HelpScreen(ModalScreen[None]):
         ("a", "Toggle all repos / this repo"),
         ("p", "Pin / unpin branch"),
         ("c", "Create worktree"),
-        ("d", "Delete branch"),
+        ("d", "Diff against default branch"),
+        ("D", "Diff local changes"),
+        ("ctrl+d", "Delete branch"),
         ("o", "Open in editor"),
         ("T", "Open / switch to workspace tab"),
         ("ctrl+t", "New workspace tab"),
@@ -353,7 +355,9 @@ class GbbApp(App):
         Binding("alt+up", "prev_group", "Prev repo", show=False),
         Binding("alt+down", "next_group", "Next repo", show=False),
         Binding("escape", "cancel", "", show=False),
-        Binding("d", "delete_branch", "Delete", show=False),
+        Binding("ctrl+d", "delete_branch", "Delete", show=False),
+        Binding("d", "diff_main", "Diff main", show=False),
+        Binding("D", "diff_local", "Diff local", show=False),
         Binding("o", "open_root", "Open", show=False),
         Binding("p", "toggle_pin", "Pin", show=False),
         Binding("K", "clear_panes", "Clear", show=False),
@@ -975,6 +979,38 @@ class GbbApp(App):
             ["subl", str(path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+        )
+
+    def _run_in_pager(self, cmd: list[str], cwd: Path) -> None:
+        with self.suspend():
+            subprocess.run(cmd, cwd=str(cwd))
+
+    def action_diff_main(self) -> None:
+        data = self._get_cursor_row_data()
+        if not data:
+            return
+        repo_name, repo_path, branch = data
+        main_branch = detect_main_branch(repo_path)
+        if not main_branch:
+            self.notify("No default branch found", timeout=3)
+            return
+        cwd = branch.worktree.path if branch.worktree else repo_path
+        self._run_in_pager(
+            ["git", "diff", f"{main_branch}...{branch.name}"],
+            cwd=repo_path,
+        )
+
+    def action_diff_local(self) -> None:
+        data = self._get_cursor_row_data()
+        if not data:
+            return
+        repo_name, repo_path, branch = data
+        if not branch.worktree:
+            self.notify("No worktree — no local changes", timeout=3)
+            return
+        self._run_in_pager(
+            ["git", "diff"],
+            cwd=branch.worktree.path,
         )
 
     def action_toggle_pin(self) -> None:
