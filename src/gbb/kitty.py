@@ -242,10 +242,14 @@ def switch_all_panes(target_path: Path, checkout_branch: str | None = None) -> S
 
 
 def focus_repo_tab(repo_name: str) -> bool:
-    """Focus an existing tab whose title matches repo_name. Returns True if found."""
+    """Focus an existing tab whose title matches repo_name. Skips our own tab."""
+    my_id = self_window_id()
     data = _kitty_ls()
     for os_window in data:
         for tab in os_window.get("tabs", []):
+            window_ids = [w["id"] for w in tab.get("windows", [])]
+            if my_id in window_ids:
+                continue
             title = tab.get("title", "")
             if title == repo_name or title.startswith(f"{repo_name} ("):
                 windows = tab.get("windows", [])
