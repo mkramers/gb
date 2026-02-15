@@ -1047,17 +1047,24 @@ class GbbApp(App):
         self, repo_name: str, repo_path: Path, branch: BranchInfo
     ) -> None:
         self._pending_delete = None
+        self.notify(f"Deleting {branch.name}...", timeout=2)
+        self._do_delete(repo_name, repo_path, branch)
+
+    @work(thread=True, exclusive=True, group="delete")
+    def _do_delete(
+        self, repo_name: str, repo_path: Path, branch: BranchInfo
+    ) -> None:
         if branch.worktree:
             err = delete_worktree(repo_path, branch.worktree.path)
             if err:
-                self.notify(f"Error: {err}", timeout=5)
+                self.call_from_thread(self.notify, f"Error: {err}", timeout=5)
                 return
         err = delete_branch(repo_path, branch.name, force=True)
         if err:
-            self.notify(f"Error: {err}", timeout=5)
+            self.call_from_thread(self.notify, f"Error: {err}", timeout=5)
             return
-        self._remove_row(repo_name, branch.name)
-        self.notify(f"Deleted {branch.name}", timeout=3)
+        self.call_from_thread(self._remove_row, repo_name, branch.name)
+        self.call_from_thread(self.notify, f"Deleted {branch.name}", timeout=3)
 
     def _show_confirm(self, message: str) -> None:
         bar = self.query_one("#confirm-bar", Static)
