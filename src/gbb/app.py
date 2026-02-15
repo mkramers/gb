@@ -1,3 +1,5 @@
+import os
+import signal
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +28,7 @@ from gbb.kitty import (
     next_tab_title,
     restart_claude_pane,
     switch_all_panes,
+    switch_pane,
 )
 from gbb.pins import load_pins, pin_key, save_pins
 
@@ -156,7 +159,7 @@ class ClaudeConfirmScreen(ModalScreen[str]):
             yield Static(
                 f"[bold]Claude running in {self._count} pane{s}[/bold]\n\n"
                 f"Kill + restart?\n\n"
-                f"[dim]c[/dim] --continue  [dim]r[/dim] --resume  [dim]n[/dim] skip"
+                f"[dim]c[/dim] --continue  [dim]r[/dim] --resume  [dim]k[/dim] kill  [dim]n[/dim] skip"
             )
 
     def on_key(self, event: events.Key) -> None:
@@ -164,6 +167,8 @@ class ClaudeConfirmScreen(ModalScreen[str]):
             self.dismiss("continue")
         elif event.key == "r":
             self.dismiss("resume")
+        elif event.key == "k":
+            self.dismiss("kill")
         elif event.key in ("n", "escape"):
             self.dismiss("")
         event.prevent_default()
@@ -1191,7 +1196,9 @@ class GbbApp(App):
             self._pending_checkout_branch = checkout_branch
 
             def on_claude_confirm(choice: str) -> None:
-                if choice:
+                if choice == "kill":
+                    self._kill_claude_panes()
+                elif choice:
                     self._restart_claude_panes(claude_flag=choice)
                 else:
                     self._pending_claude_windows = []
@@ -1219,6 +1226,35 @@ class GbbApp(App):
             self.call_from_thread(
                 self.notify,
                 f"Restarted claude --{claude_flag} in {restarted} pane{'s' if restarted != 1 else ''}",
+                timeout=3,
+            )
+
+    @work(thread=True, exclusive=True, group="kitty-claude")
+    def _kill_claude_panes(self) -> None:
+        windows = list(self._pending_claude_windows)
+        path = self._pending_switch_path
+        checkout = self._pending_checkout_branch
+        self._pending_claude_windows = []
+        self._pending_switch_path = None
+        self._pending_checkout_branch = None
+        killed = 0
+        for w in windows:
+            # Kill claude then cd to target (no restart)
+            for pid in reversed(w.pids):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            killed += 1
+        if killed:
+            # Wait briefly for processes to exit
+            time.sleep(0.5)
+            for w in windows:
+                if path:
+                    switch_pane(w.id, path, checkout)
+            self.call_from_thread(
+                self.notify,
+                f"Killed claude in {killed} pane{'s' if killed != 1 else ''}",
                 timeout=3,
             )
 
