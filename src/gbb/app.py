@@ -891,6 +891,7 @@ class GbbApp(App):
             self._show_workspace_options(
                 (repo_name, repo_path, worktree_path, None),
                 force_new=False,
+                claude_flag=None,
             )
 
     @work(thread=True, exclusive=True, group="kitty-workspace")
@@ -916,16 +917,17 @@ class GbbApp(App):
         self,
         params: tuple[str, Path, Path, str | None],
         force_new: bool,
+        claude_flag: str | None = "continue",
     ) -> None:
         def on_result(ws_config: WorkspaceConfig | None) -> None:
             if ws_config is None:
                 return
             self._config.workspace = ws_config
             self._config.save_workspace()
-            if force_new:
-                self._do_create_workspace(*params, ws_config=ws_config, use_numbered_title=True)
-            else:
-                self._do_create_workspace(*params, ws_config=ws_config, use_numbered_title=False)
+            self._do_create_workspace(
+                *params, ws_config=ws_config,
+                use_numbered_title=force_new, claude_flag=claude_flag,
+            )
 
         self.push_screen(
             WorkspaceOptionsScreen(self._config.workspace),
@@ -941,6 +943,7 @@ class GbbApp(App):
         checkout_branch: str | None,
         ws_config: WorkspaceConfig | None = None,
         use_numbered_title: bool = False,
+        claude_flag: str | None = "continue",
     ) -> None:
         ws = ws_config or self._config.workspace
         try:
@@ -948,6 +951,7 @@ class GbbApp(App):
             create_workspace_tab(
                 repo_name, repo_path, selected_dir, checkout_branch,
                 tab_title=title, start_claude=ws.start_claude,
+                claude_flag=claude_flag,
             )
         except KittyError as e:
             self.call_from_thread(self.notify, f"Workspace failed: {e}", timeout=5)

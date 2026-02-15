@@ -288,6 +288,7 @@ def create_workspace_tab(
     checkout_branch: str | None = None,
     tab_title: str | None = None,
     start_claude: bool = True,
+    claude_flag: str | None = "continue",
 ) -> None:
     """Create a new kitty tab with claude, gbb, and shell panes."""
     title = tab_title or repo_name
@@ -321,13 +322,14 @@ def create_workspace_tab(
     ))
 
     # Step 5: send commands to panes (only one pane does checkout to avoid lock races)
+    claude_cmd = f"claude --{claude_flag}" if claude_flag else "claude"
     if checkout_branch:
         if start_claude:
-            send_text(int(left_id), f"git checkout {checkout_branch} && claude --continue\n")
+            send_text(int(left_id), f"git checkout {checkout_branch} && {claude_cmd}\n")
         else:
             send_text(int(left_id), f"git checkout {checkout_branch}\n")
     elif start_claude:
-        send_text(int(left_id), "claude --continue\n")
+        send_text(int(left_id), f"{claude_cmd}\n")
     send_text(int(gbb_id), "gbb\n")
 
     # Step 6: focus left pane
